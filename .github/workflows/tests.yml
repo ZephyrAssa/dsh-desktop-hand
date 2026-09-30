@@ -53,15 +53,30 @@ jobs:
 
       - name: Engine self-test
         shell: pwsh
-        # `|| true` is deliberately NOT used: a genuine failure must still fail the
-        # build. The point here is only to make the output visible in the log.
+        # Capture the output to a file and publish it as an artifact AND a job
+        # summary. The Actions *log* endpoint requires authentication, so without
+        # this a CI-only failure can only be guessed at from annotations
+        # ("exited 1") - which is exactly what happened while writing this.
+        # The step still fails the build on a real failure.
         run: |
-          ./lib/selftest.ps1
+          ./lib/selftest.ps1 *>&1 | Tee-Object -FilePath selftest-output.txt
           $code = $LASTEXITCODE
           if ($code -ne 0) {
             Write-Host "::error::engine self-test exited $code"
+            # Put the tail in the job summary so it is readable without auth.
+            $tail = (Get-Content selftest-output.txt -Tail 60) -join "`n"
+            "## Engine self-test failed (exit $code)`n`n``````n$tail`n``````" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
+
+      - name: Upload self-test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-output
+          path: selftest-output.txt
+          if-no-files-found: warn
 
       - name: Occluded-capture proof
         shell: pwsh
