@@ -1,0 +1,78 @@
+name: tests
+
+# Runs all four of the plugin's self-test suites on a real Windows runner:
+#   lib/selftest.ps1          32 checks — the PowerShell engine against real Win32 APIs
+#   lib/selftest.mjs          79 checks — the tool layer (apply/register/schema/execute)
+#   lib/selftest-harness.mjs  18 checks — the DSH subprocess seam contract, via a fake seam
+#   lib/occlusion-test.ps1     7 checks — occluded-window capture (PrintWindow vs CopyFromScreen)
+#
+# Dependency note: the plugin's peer dependencies normally ship inside DSH, which is
+# not present on CI. They ARE published to npm, so CI installs them there. Only
+# `@deepseek-ai/dsh-tools` matters for the code paths under test, and the suites pass
+# against the published version — verified locally before this workflow was written.
+#
+# Scope note: this cannot prove the plugin loads inside a *running* DSH process;
+# that needs a DSH install and a restart, and stays a manual step
+# (see docs/COMPATIBILITY.md §5). What it does prove is that apply() registers all
+# six tools with valid schemas — the part of loading checkable without booting DSH.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Install the peer dependencies at the repository root so that lib/index.js
+      # resolves them. Versions are pinned to what this plugin was verified against.
+      - name: Install peer dependencies
+        run: npm install --no-save --no-audit --no-fund @deepseek-ai/dsh-tools @deepseek-ai/schemastery
+
+      - name: Engine self-test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./lib/selftest.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Occluded-capture proof
+        shell: pwsh
+        # Opens two console windows and maximizes one to guarantee full occlusion.
+        # The script always terminates the processes it started.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./lib/occlusion-test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Tool-layer self-test
+        shell: pwsh
+        run: |
+          node ./lib/selftest.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Subprocess-seam contract self-test
+        shell: pwsh
+        run: |
+          node ./lib/selftest-harness.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload capture evidence
+        # The occlusion test's value is partly visual: keep the images so a human
+        # can confirm the occluded capture shows the target's own content, not the
+        # blocker that covers it.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: occlusion-evidence
+          path: ${{ runner.temp }}/dsh-desktop-hand-occlusion/*.png
+          if-no-files-found: warn

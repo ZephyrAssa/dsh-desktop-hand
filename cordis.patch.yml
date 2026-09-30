@@ -1,0 +1,12 @@
+# dsh-desktop-hand 的挂载声明。
+#
+# DSH 通过 profile 的 `dsh.profile.bundles` 找到本包，读这个文件把它插进插件栈。
+# 等价于手工在 profile 的 cordis.patch.yml 里写同一段 insert ——
+# ⚠️ 两者**只能选一个**，同时用会双重挂载（工具会注册两次而报"already registered"）。
+#
+# 推荐走 bundle 通道：`dsh plugin --profile web add <本目录>` 会自动做三件事
+# （加 dependency、加 pnpm override、把本包名追加进 dsh.profile.bundles）。
+- insert:
+    - id: desktop-hand
+      name: dsh-desktop-hand
+      config: {}

@@ -1,0 +1,16 @@
+# Dependencies linked locally for standalone self-tests.
+# `lib/link-deps.ps1` creates these as junctions into the local DSH install;
+# they are machine-specific and must never be committed.
+node_modules/
+
+# Captured screenshots / test artifacts
+*.png
+!docs/**/*.png
+截图/
+captures/
+
+# Local scratch
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

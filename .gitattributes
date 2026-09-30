@@ -1,0 +1,23 @@
+# Line endings: the repository stores LF everywhere.
+# The PowerShell engine is CRLF-agnostic, but its BOM is NOT optional — see below.
+* text=auto eol=lf
+
+# ---------------------------------------------------------------------------
+# The PowerShell scripts contain Chinese comments and string literals, and they
+# must keep their UTF-8 BOM.
+#
+# Windows PowerShell 5.1 (the engine's target runtime) decodes a .ps1 file using
+# the system ANSI code page unless the file starts with a BOM. Without it, the
+# Chinese comments become mojibake and the parser can fail outright — the file
+# literally will not run.
+#
+# `-text` disables all newline and encoding normalization for these paths so git
+# never rewrites them. Do not change this to `text` or add a `working-tree-encoding`:
+# either can strip the BOM and silently break the engine on a fresh clone.
+*.ps1 -text
+# ---------------------------------------------------------------------------
+
+# Binary assets, if any are ever added.
+*.png binary
+*.jpg binary
+*.ico binary
