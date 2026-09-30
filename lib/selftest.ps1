@@ -85,7 +85,25 @@ function Run([hashtable]$params) {
     }
     $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue)
     if (-not $exe) { $exe = (Get-Command pwsh -ErrorAction SilentlyContinue) }
-    $out = & $exe.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Engine @argv 2>$null
+    if (-not $exe) { return [pscustomobject]@{ ok = $false; error = 'no powershell/pwsh on PATH' } }
+
+    # ⚠️ 调用原生程序时必须临时把 $ErrorActionPreference 降回 Continue。
+    #
+    # 为什么（CI 上的真实坑）：PowerShell 会把**原生程序的 stderr** 包装成
+    # ErrorRecord。脚本顶部设了 `$ErrorActionPreference = 'Stop'`，
+    # 于是只要引擎往 stderr 写一个字，这一行就会变成**终止错误**，
+    # 整个自检当场中断 —— 表现是输出只有 1KB 就没了，而本机因为
+    # 引擎恰好不写 stderr 而一切正常。
+    # `2>$null` 并不能阻止这个行为：重定向丢的是数据，ErrorRecord 照样产生。
+    #
+    # 另外 `$LASTEXITCODE` 是原生命令的真实退出码，必须留着供调用方判断。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $exe.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Engine @argv 2>$null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     $raw = ($out | Out-String).Trim()
     if (-not $raw) { return [pscustomobject]@{ ok = $false; error = 'engine produced no output' } }
     # 引擎恒输出单行 JSON；取最后一行以防有多余噪声
