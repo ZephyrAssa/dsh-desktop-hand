@@ -53,22 +53,31 @@ jobs:
 
       - name: Engine self-test
         shell: pwsh
-        # Capture the output to a file and publish it as an artifact AND a job
-        # summary. The Actions *log* endpoint requires authentication, so without
-        # this a CI-only failure can only be guessed at from annotations
-        # ("exited 1") - which is exactly what happened while writing this.
-        # The step still fails the build on a real failure.
+        # Diagnostic packaging: the Actions *log* endpoint needs authentication, so
+        # the output is also written to a file (artifact) and, on failure, to the
+        # job summary - both readable without auth.
+        #
+        # ⚠️ Do NOT pipe the script into Tee-Object and then read $LASTEXITCODE.
+        # In `A | B`, $LASTEXITCODE reflects B (Tee-Object), not A, so a passing
+        # suite can still be reported as a failed step. That bug is why this step
+        # showed 'failure' while the log plainly read "37 passed / 0 failed".
+        # Run the script directly, capture its code first, and only then tee.
         run: |
-          ./lib/selftest.ps1 *>&1 | Tee-Object -FilePath selftest-output.txt
+          ./lib/selftest.ps1 *> selftest-output.txt
           $code = $LASTEXITCODE
+          Get-Content selftest-output.txt | Write-Host
+          # Report both the shell's exit code and the script's own verdict, so a
+          # mismatch between 'tests passed' and 'step failed' is immediately visible.
+          $verdict = (Get-Content selftest-output.txt | Select-String '结果：' | Select-Object -Last 1).Line
+          Write-Host "::notice::LASTEXITCODE=$code ; verdict=$verdict"
           if ($code -ne 0) {
             Write-Host "::error::engine self-test exited $code"
-            # Put the tail in the job summary so it is readable without auth.
             $tail = (Get-Content selftest-output.txt -Tail 60) -join "`n"
             "## Engine self-test failed (exit $code)`n`n``````n$tail`n``````" |
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
+          Write-Host "engine self-test passed"
 
       - name: Upload self-test output
         if: always()
@@ -86,8 +95,9 @@ jobs:
         # exits 0 rather than failing — an environment that cannot build the
         # scenario is not evidence of a defect.
         run: |
-          ./lib/occlusion-test.ps1 *>&1 | Tee-Object -FilePath occlusion-output.txt
+          ./lib/occlusion-test.ps1 *> occlusion-output.txt
           $code = $LASTEXITCODE
+          Get-Content occlusion-output.txt | Write-Host
           if ($code -ne 0) {
             Write-Host "::error::occlusion test exited $code"
             $tail = (Get-Content occlusion-output.txt -Tail 60) -join "`n"
@@ -95,6 +105,7 @@ jobs:
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
+          Write-Host "occlusion test passed"
 
       - name: Upload occlusion output
         if: always()

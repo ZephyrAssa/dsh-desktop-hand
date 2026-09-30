@@ -140,3 +140,4 @@ foreach ($p in @($tProc, $bProc)) { if ($p -and -not $p.HasExited) { try { $p.Ki
 
 Write-Host "`n=== 结果：$script:pass 通过 / $script:fail 失败 ===" -ForegroundColor $(if ($script:fail -eq 0) { 'Green' } else { 'Red' })
 if ($script:fail -gt 0) { exit 1 }
+exit 0

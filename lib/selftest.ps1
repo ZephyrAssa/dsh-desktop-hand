@@ -371,4 +371,14 @@ Write-Host "`n=== 结果：$script:pass 通过 / $script:fail 失败 / $script:s
 if ($script:skip -gt 0) {
     Write-Host "    （SKIP 是环境不具备条件，不是缺陷；详见上方每条的说明）" -ForegroundColor DarkGray
 }
+
+# ⚠️ 必须**显式**给出两个分支的退出码，不能只在失败时 exit 1。
+#
+# 为什么（CI 上的真实故障）：只写 `if (fail) { exit 1 }` 时，全部通过的分支
+# 「不执行 exit」，脚本的退出码就取决于 PowerShell 结束时环境里残留的状态。
+# 实测在 GitHub runner（pwsh 7）上出现：日志明明打印「36 通过 / 0 失败」，
+# 而调用方拿到 LASTEXITCODE=1，于是**步骤被判失败**——
+# 测试结果与退出码不一致，是最难查的一类问题。
+# 两个分支都显式 exit，语义就完全确定了。
 if ($script:fail -gt 0) { exit 1 }
+exit 0
