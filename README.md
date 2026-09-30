@@ -1,11 +1,15 @@
 # dsh-desktop-hand
 
+[![tests](https://github.com/ZephyrAssa/dsh-desktop-hand/actions/workflows/tests.yml/badge.svg)](https://github.com/ZephyrAssa/dsh-desktop-hand/actions/workflows/tests.yml)
+
 **Hands and eyes for a DSH agent on Windows.** Capture any window's own content
 *even while it is fully occluded*, click by coordinate, type Unicode text that
 bypasses the IME, and focus windows — all as agent-callable tools.
 
 > A plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
-> **Windows only** (uses `user32` / `gdi32` / `shcore` via PowerShell 5.1).
+> **Windows only** (uses `user32` / `gdi32` / `shcore` via PowerShell).
+> Verified on PowerShell 5.1 (Windows 10/11) and pwsh 7 on GitHub's
+> `windows-latest` runner.
 
 ---
 
@@ -208,17 +212,39 @@ in `try/catch` and only warn on failure. See
 ## Tests
 
 ```powershell
-.\lib\link-deps.ps1               # link peer deps for standalone runs
-.\lib\selftest.ps1                # 32 checks — engine
+.\lib\link-deps.ps1               # link peer deps for standalone runs (not needed under DSH)
+.\lib\selftest.ps1                # 37 checks — engine
 node .\lib\selftest.mjs           # 79 checks — tool layer (incl. version-compat regressions)
 node .\lib\selftest-harness.mjs   # 18 checks — harness subprocess seam contract
-.\lib\occlusion-test.ps1          #  7 checks — occluded capture (inspect the images)
+.\lib\occlusion-test.ps1          #  8 checks — occluded capture (inspect the images)
 .\lib\link-deps.ps1 -Clean
 ```
 
-**136 checks, 0 failures**, stable across repeated runs. The keyboard round-trip is
-verified objectively: the typed text changes the target window's title, which is
-then read back — including a Chinese case that would fail if the IME were not bypassed.
+**142 checks, 0 failures**, stable across repeated local runs and green on
+GitHub's `windows-latest` runner. The keyboard round-trip is verified
+objectively: the typed text changes the target window's title, which is then read
+back — including a Chinese case that would fail if the IME were not bypassed.
+
+### A note on environment-dependent checks
+
+Some checks depend on the machine having a real interactive desktop (window
+enumeration, the keyboard round-trip, occluded capture). A CI runner is not a
+full desktop, so those checks **skip** when their precondition is absent rather
+than fail — an environment that cannot host the scenario is not evidence of a
+defect. The summary line reports pass / fail / skip separately.
+
+`fail` is the only signal that means the code is broken; the suites exit non-zero
+only for that. Both scripts also exit explicitly on the success path, because a
+script that only exits on failure can hand the caller an exit code that
+contradicts its own verdict.
+
+### What CI cannot cover
+
+The suites drive the real Win32 APIs, and `selftest.mjs` verifies that `apply()`
+registers all six tools with valid schemas — but **whether the plugin loads
+inside a running DSH process is not tested**, because that requires a DSH install
+and a restart. See [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) §5 for the
+manual check.
 
 ---
 
