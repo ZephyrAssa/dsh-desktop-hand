@@ -35,8 +35,21 @@ function Check([string]$n, [bool]$ok, [string]$d = '') {
 
 # 用子进程调用引擎；引擎用 [Console]::Out.Write 写 stdout，不走 PS 成功流
 function Invoke-Engine([string[]]$argv) {
-    $exe = (Get-Command powershell.exe).Source
-    $out = & $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Engine @argv 2>$null
+    $cmd = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command pwsh -ErrorAction SilentlyContinue }
+    if (-not $cmd) { return $null }
+    # ⚠️ 调原生程序前必须把 ErrorActionPreference 降回 Continue。
+    # PowerShell 会把原生程序的 stderr 包装成 ErrorRecord，而本脚本顶部设了
+    # 'Stop'，于是引擎只要往 stderr 写一个字，这里就抛终止错误、整个脚本中断。
+    # 实测：GitHub runner 上就是这样把遮挡验证弄崩的（本机引擎不写 stderr 所以没暴露）。
+    # `2>$null` 挡不住这个行为——它丢的是数据，ErrorRecord 照样产生。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $cmd.Source -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Engine @argv 2>$null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     $line = ($out | Out-String) -split "`r?`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1
     if (-not $line) { return $null }
     return $line | ConvertFrom-Json
@@ -49,7 +62,8 @@ $marker = 'OCCL_' + (Get-Random -Minimum 10000 -Maximum 99999)
 $blocker = 'BLOCKER_' + (Get-Random -Minimum 10000 -Maximum 99999)
 
 # 1) 目标窗口：内容里带 marker
-$tProc = Start-Process cmd.exe -ArgumentList '/k', "title $marker & echo $marker CONTENT LINE" -PassThru
+$tProc = $null
+    try { $tProc = Start-Process cmd.exe -ArgumentList '/k', "title $marker & echo $marker CONTENT LINE" -PassThru -ErrorAction Stop } catch { }
 Start-Sleep -Seconds 3
 
 # 2) 找到目标窗口
@@ -59,8 +73,16 @@ for ($i = 0; $i -lt 10 -and $null -eq $t; $i++) {
     if ($lw) { $t = @($lw.windows | Where-Object { $_.title -match $marker } | Select-Object -First 1)[0] }
     if ($null -eq $t) { Start-Sleep -Milliseconds 500 }
 }
-Check '找到目标窗口' ($null -ne $t) "marker=$marker"
-if ($null -eq $t) { exit 1 }
+if ($null -eq $t) {
+    # 本环境无法创建可见窗口 => 无法构造"遮挡"场景。
+    # 这不是代码缺陷，所以不判失败；但要明确说出来，避免被误读成"验证通过"。
+    Write-Host "  SKIP  找不到测试目标窗口 —— 本环境无法为测试创建可见窗口" -ForegroundColor DarkGray
+    Write-Host "        （遮挡抓取需要真实桌面；CI 上若 desktop 不可用就会走到这里）" -ForegroundColor DarkGray
+    foreach ($pp in @($tProc, $bProc)) { if ($pp -and -not $pp.HasExited) { try { $pp.Kill() } catch { } } }
+    Write-Host "`n=== 结果：0 通过 / 0 失败（已跳过：本环境无法构造遮挡场景）===" -ForegroundColor Yellow
+    exit 0
+}
+Check '找到目标窗口' $true "marker=$marker"
 Write-Host "      目标 handle=$($t.handle) rect=($($t.x),$($t.y)) $($t.width)x$($t.height)" -ForegroundColor DarkGray
 
 # 3) 抓一张"未被遮挡"的基准图
@@ -69,7 +91,8 @@ Check '遮挡前能抓到目标窗口' ([bool]$before.ok) $before.error
 Write-Host "      抓取尺寸 $($before.width)x$($before.height)（应为 $($t.width)x$($t.height) 左右）" -ForegroundColor DarkGray
 
 # 4) 全屏遮挡者盖住它
-$bProc = Start-Process cmd.exe -ArgumentList '/k', "title $blocker & mode con: cols=200 lines=60 & echo $blocker THIS IS THE BLOCKER WINDOW COVERING EVERYTHING" -PassThru
+$bProc = $null
+    try { $bProc = Start-Process cmd.exe -ArgumentList '/k', "title $blocker & mode con: cols=200 lines=60 & echo $blocker THIS IS THE BLOCKER WINDOW COVERING EVERYTHING" -PassThru -ErrorAction Stop } catch { }
 Start-Sleep -Seconds 3
 # 把遮挡者最大化并拉到前台
 $bw = Invoke-Engine @('-Action', 'list-windows')

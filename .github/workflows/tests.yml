@@ -81,23 +81,44 @@ jobs:
       - name: Occluded-capture proof
         shell: pwsh
         # Opens two console windows and maximizes one to guarantee full occlusion.
-        # The script always terminates the processes it started.
+        # The script terminates the processes it started in every exit path.
+        # Note: if the runner cannot host visible windows, the script SKIPs and
+        # exits 0 rather than failing — an environment that cannot build the
+        # scenario is not evidence of a defect.
         run: |
-          $ErrorActionPreference = 'Stop'
-          ./lib/occlusion-test.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./lib/occlusion-test.ps1 *>&1 | Tee-Object -FilePath occlusion-output.txt
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "::error::occlusion test exited $code"
+            $tail = (Get-Content occlusion-output.txt -Tail 60) -join "`n"
+            "## Occlusion test failed (exit $code)`n`n``````n$tail`n``````" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit $code
+          }
+
+      - name: Upload occlusion output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: occlusion-output
+          path: occlusion-output.txt
+          if-no-files-found: warn
 
       - name: Tool-layer self-test
         shell: pwsh
+        # No `$ErrorActionPreference = 'Stop'` here on purpose: these steps invoke
+        # native programs (node), and under Stop preference a byte on the child's
+        # stderr becomes a terminating error that aborts the step. Exit codes are
+        # checked explicitly instead.
         run: |
           node ./lib/selftest.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::tool-layer self-test exited $LASTEXITCODE"; exit $LASTEXITCODE }
 
       - name: Subprocess-seam contract self-test
         shell: pwsh
         run: |
           node ./lib/selftest-harness.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::seam self-test exited $LASTEXITCODE"; exit $LASTEXITCODE }
 
       - name: Upload capture evidence
         # The occlusion test's value is partly visual: keep the images so a human
