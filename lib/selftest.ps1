@@ -28,6 +28,14 @@ $script:pass = 0
 $script:fail = 0
 $script:skip = 0
 
+# 安全的路径存在性判断。
+# `Test-Path` 在收到 $null 或非法路径时**会抛错**，而本脚本设了
+# $ErrorActionPreference='Stop'，于是"文件没生成"会被报成脚本崩溃，
+# 而不是一条 FAIL。CI 上就是这样把环境问题伪装成代码问题的。
+function Test-PathSafe([object]$p) {
+    if ($null -eq $p -or "$p".Trim().Length -eq 0) { return $false }
+    try { return (Test-Path -LiteralPath "$p" -ErrorAction Stop) } catch { return $false }
+}
 function Check([string]$name, [bool]$ok, [string]$detail = '') {
     if ($ok) { $script:pass++; Write-Host ("  PASS  " + $name) -ForegroundColor Green }
     else { $script:fail++; Write-Host ("  FAIL  " + $name + $(if ($detail) { "  -- $detail" } else { '' })) -ForegroundColor Red }
@@ -89,6 +97,24 @@ function Run([hashtable]$params) {
 Write-Host "`n=== dsh-desktop-hand 自检 ===" -ForegroundColor Cyan
 Write-Host "engine: $Engine`n"
 
+# 环境事实：CI 上出问题时，这几行能立刻说明"是不是环境不同"，
+# 省掉一轮"改代码 → 推 → 等 CI"的猜测。实测值得。
+Write-Host "环境：UserInteractive=$([Environment]::UserInteractive) " -NoNewline
+Write-Host "SessionId=$((Get-Process -Id $PID -ErrorAction SilentlyContinue).SessionId) " -NoNewline
+Write-Host "PS=$($PSVersionTable.PSVersion)`n" -ForegroundColor DarkGray
+
+# 兜底：任何未预料的终止错误都转成一条明确的 FAIL + 出错行号，再以非 0 退出。
+# 没有它的话，脚本顶部 $ErrorActionPreference='Stop' 会让意外错误直接中断，
+# 日志里只剩一行报错，看不出跑到哪一步、也无法区分"环境问题"还是"代码问题"。
+trap {
+    Write-Host "`n  FAIL  未预料的错误，自检提前中断：" -ForegroundColor Red
+    Write-Host "         $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "         位置：$($_.InvocationInfo.PositionMessage)" -ForegroundColor Red
+    Write-Host "         （若这是 CI 独有，请对照上面的环境事实判断是否为环境差异）" -ForegroundColor DarkGray
+    Write-Host "`n=== 结果：$script:pass 通过 / $($script:fail + 1) 失败（中断）/ $script:skip 跳过 ===" -ForegroundColor Red
+    exit 1
+}
+
 # ---------------------------------------------------------------- info
 Write-Host "[1] info —— DPI 感知与屏幕尺寸"
 $info = Run @{ Action = 'info' }
@@ -125,15 +151,15 @@ if ($desktopOk) {
 # ---------------------------------------------------------------- capture fullscreen
 Write-Host "`n[3] capture -FullScreen —— 全屏抓取"
 $capDir = Join-Path $env:TEMP 'dsh-desktop-hand-selftest'
-if (-not (Test-Path $capDir)) { New-Item -ItemType Directory -Force -Path $capDir | Out-Null }
+if (-not (Test-PathSafe $capDir)) { New-Item -ItemType Directory -Force -Path $capDir | Out-Null }
 $full = Run @{ Action = 'capture'; FullScreen = $true; OutPath = (Join-Path $capDir 'full.png') }
 Check '全屏抓取 ok' ([bool]$full.ok) $full.error
 if ($full.ok) {
     # 尺寸一致性：截图宽必须等于引擎报告的物理屏宽。这是代码契约，与环境无关。
     Check '尺寸等于物理屏' ([int]$full.width -eq [int]$info.screenWidth) "got $($full.width) want $($info.screenWidth)"
-    Check 'PNG 文件已落盘' (Test-Path $full.path)
-    if (Test-Path $full.path) {
-        Check 'PNG 非空' ((Get-Item $full.path).Length -gt 1000) "bytes=$($full.bytes)"
+    Check 'PNG 文件已落盘' (Test-PathSafe $full.path)
+    if (Test-PathSafe $full.path) {
+        Check 'PNG 非空' ((Get-Item -LiteralPath $full.path).Length -gt 1000) "bytes=$($full.bytes)"
     }
 }
 
