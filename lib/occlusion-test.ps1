@@ -115,17 +115,24 @@ Check '遮挡状态下能抓全屏' ([bool]$fs.ok) $fs.error
 $after = Invoke-Engine @('-Action', 'capture', '-Handle', "$($t.handle)", '-OutPath', (Join-Path $outDir 'after_occluded.png'))
 Check '被遮挡后仍能抓到目标窗口' ([bool]$after.ok) $after.error
 
+# 判据：抓到的必须是**目标窗口自己的**尺寸，而不是全屏尺寸。
+#
+# ⚠️ 不能用 `after.width < fs.width` 来判（曾经这么写，在 CI 上误判）。
+# 窗口尺寸**可以大于屏幕**：本机实测有 2578 宽的窗口而屏幕只有 2560
+# （边框在屏幕外 / 部分离屏）。所以"比全屏小"不是这条断言要表达的意思，
+# 它要表达的是"抓到的是窗口而不是整屏"。
+# 正确做法：与目标窗口自身的 rect 比（允许 DWM 扩展边框带来的几十像素差异），
+# 并额外确认它与全屏抓取**不相同**。
 if ($after.ok) {
-    # 判据 A：尺寸应当仍是目标窗口自己的尺寸，而不是全屏尺寸
-    Check '抓到的仍是目标窗口尺寸（非全屏）' `
-        ([int]$after.width -lt [int]$fs.width) `
-        "after=$($after.width)x$($after.height) fullscreen=$($fs.width)x$($fs.height)"
+    $dw = [math]::Abs([int]$after.width - [int]$t.width)
+    $dh = [math]::Abs([int]$after.height - [int]$t.height)
+    Check '抓到的尺寸等于目标窗口自身尺寸' (($dw -le 32) -and ($dh -le 32)) "after=$($after.width)x$($after.height) window=$($t.width)x$($t.height)"
 
-    # 判据 B：目标被遮挡，所以全屏图里那块区域不该是目标的内容；
-    #         而窗口抓取图应当与"遮挡前"那张高度相似（同一个窗口的内容）
-    Check '遮挡前后窗口抓取尺寸一致' `
-        ([int]$after.width -eq [int]$before.width -and [int]$after.height -eq [int]$before.height) `
-        "before=$($before.width)x$($before.height) after=$($after.width)x$($after.height)"
+    $sameAsFull = ([int]$after.width -eq [int]$fs.width) -and ([int]$after.height -eq [int]$fs.height)
+    Check '抓到的不是全屏图（说明走的是 PrintWindow 而非 CopyFromScreen）' (-not $sameAsFull) "after=$($after.width)x$($after.height) fullscreen=$($fs.width)x$($fs.height)"
+
+    # 遮挡前后同一窗口的抓取尺寸应当一致
+    Check '遮挡前后窗口抓取尺寸一致' (([int]$after.width -eq [int]$before.width) -and ([int]$after.height -eq [int]$before.height)) "before=$($before.width)x$($before.height) after=$($after.width)x$($after.height)"
 }
 
 Write-Host "`n产物（请用 read_image 人工确认内容是否是目标窗口而非遮挡者）：" -ForegroundColor Yellow
