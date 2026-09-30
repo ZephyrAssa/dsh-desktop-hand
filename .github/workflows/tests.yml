@@ -38,12 +38,30 @@ jobs:
       - name: Install peer dependencies
         run: npm install --no-save --no-audit --no-fund @deepseek-ai/dsh-tools @deepseek-ai/schemastery
 
-      - name: Engine self-test
+      # Diagnostics first: a CI runner is not a full interactive desktop, so it is
+      # worth recording what the environment actually looks like when a test fails.
+      - name: Describe the runner environment
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          Write-Host "--- session / desktop facts ---"
+          Write-Host ("UserInteractive : " + [Environment]::UserInteractive)
+          Write-Host ("SessionId       : " + (Get-Process -Id $PID).SessionId)
+          Write-Host "--- engine info action ---"
+          try { ./lib/desktop-hand.ps1 -Action info } catch { Write-Host "info threw: $_" }
+          Write-Host "--- engine list-windows ---"
+          try { ./lib/desktop-hand.ps1 -Action list-windows } catch { Write-Host "list-windows threw: $_" }
+
+      - name: Engine self-test
+        shell: pwsh
+        # `|| true` is deliberately NOT used: a genuine failure must still fail the
+        # build. The point here is only to make the output visible in the log.
+        run: |
           ./lib/selftest.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "::error::engine self-test exited $code"
+            exit $code
+          }
 
       - name: Occluded-capture proof
         shell: pwsh

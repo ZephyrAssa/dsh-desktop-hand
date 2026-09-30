@@ -219,7 +219,16 @@ if ($pr.ok) {
 # ---------------------------------------------------------------- keyboard round-trip
 Write-Host "`n[7] focus + type —— 键鼠闭环（客观判据：窗口标题变化）"
 $marker = 'DSKHAND' + (Get-Random -Minimum 1000 -Maximum 9999)
-$proc = Start-Process cmd.exe -ArgumentList '/k', "title $marker" -PassThru
+# Start-Process 必须容错：脚本顶部设了 $ErrorActionPreference='Stop'，
+# 而在缺少可交互桌面的环境（CI runner）里，起一个控制台窗口**可能直接抛错**，
+# 那会当场终止整个自检，后面的 SKIP 分支根本没机会执行——
+# 于是"环境不支持"被报成"代码失败"。实测 GitHub windows-latest 上就是这样红的。
+$proc = $null
+try {
+    $proc = Start-Process cmd.exe -ArgumentList '/k', "title $marker" -PassThru -ErrorAction Stop
+} catch {
+    Write-Host "      起测试窗口失败（$($_.Exception.Message)）——将跳过键盘闭环测试" -ForegroundColor DarkGray
+}
 Start-Sleep -Seconds 3
 $target = $null
 for ($i = 0; $i -lt 10 -and $null -eq $target; $i++) {
