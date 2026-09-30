@@ -98,11 +98,16 @@ jobs:
           ./lib/occlusion-test.ps1 *> occlusion-output.txt
           $code = $LASTEXITCODE
           Get-Content occlusion-output.txt | Write-Host
+          # Emit the full output as ::error:: annotations: the Actions log and
+          # artifact endpoints both require authentication, but annotations are
+          # readable anonymously through the check-runs API. Without this, a
+          # runner-only failure of this step cannot be diagnosed at all.
+          $lines = Get-Content occlusion-output.txt
+          foreach ($l in $lines) {
+            if ($l.Trim().Length -gt 0) { Write-Host "::error::$l" }
+          }
           if ($code -ne 0) {
             Write-Host "::error::occlusion test exited $code"
-            $tail = (Get-Content occlusion-output.txt -Tail 60) -join "`n"
-            "## Occlusion test failed (exit $code)`n`n``````n$tail`n``````" |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
           }
           Write-Host "occlusion test passed"
