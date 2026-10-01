@@ -34,13 +34,45 @@ if ($Clean) {
     return
 }
 
-# peer 依赖的来源：优先 profile，其次 DSH 安装目录
-$profileDir = Join-Path $env:APPDATA 'dsh-desktop\harness\profiles\web\node_modules\@deepseek-ai'
-$appDir = 'D:\Programs\DSH\DSH Desktop\resources\app\node_modules\@deepseek-ai'
+# peer 依赖的来源，按优先级：
+#   1) 环境变量 DSH_APP_DIR（显式指定，最可靠）
+#   2) 常见安装位置，自动探测
+#   3) 上次用过的路径
+#
+# ⚠️ 之前这里写死了 'D:\Programs\DSH\...'，结果 DSH 重装到
+# 'C:\Program Files\DSH Desktop' 后，自检**一直在拿旧版本（0.1.5-rc.2）验证**，
+# 而运行时是新版本（0.1.7-rc.2）—— 版本错配会让自检全绿但插件在真机上失败。
+# 所以现在自动探测，并把选中的路径打印出来，避免再出现"测的不是跑的那份"。
+$appCandidates = @(
+    $env:DSH_APP_DIR,
+    'C:\Program Files\DSH Desktop\resources\app.asar.unpacked',
+    'C:\Program Files\DSH Desktop\resources\app',
+    "$env:LOCALAPPDATA\Programs\DSH Desktop\resources\app.asar.unpacked",
+    "$env:LOCALAPPDATA\Programs\DSH Desktop\resources\app",
+    'D:\Programs\DSH\DSH Desktop\resources\app.asar.unpacked',
+    'D:\Programs\DSH\DSH Desktop\resources\app'
+) | Where-Object { $_ -and (Test-Path $_) }
 
-$roots = @($profileDir, $appDir) | Where-Object { Test-Path $_ }
+$appDir = $null
+foreach ($c in $appCandidates) {
+    $probe = Join-Path $c 'node_modules\@deepseek-ai'
+    if (Test-Path $probe) { $appDir = $probe; break }
+}
+
+$profileDir = Join-Path $env:APPDATA 'dsh-desktop\harness\profiles\web\node_modules\@deepseek-ai'
+
+$roots = @($profileDir, $appDir) | Where-Object { $_ -and (Test-Path $_) }
 if ($roots.Count -eq 0) {
-    throw "找不到任何 @deepseek-ai 包目录。自检需要它们；插件在 DSH 里运行时不需要。"
+    throw "找不到任何 @deepseek-ai 包目录。自检需要它们；插件在 DSH 里运行时不需要。可用 `$env:DSH_APP_DIR 显式指定。"
+}
+
+if ($appDir) {
+    $ver = '?'
+    $tf = Join-Path $appDir 'dsh-tools\package.json'
+    if (Test-Path $tf) { $ver = (Get-Content $tf -Raw | ConvertFrom-Json).version }
+    Write-Host "  DSH 安装目录: $appDir  (dsh-tools $ver)" -ForegroundColor DarkGray
+} else {
+    Write-Host "  未找到 DSH 安装目录，仅用 profile 里的包" -ForegroundColor Yellow
 }
 
 New-Item -ItemType Directory -Force -Path $target | Out-Null
