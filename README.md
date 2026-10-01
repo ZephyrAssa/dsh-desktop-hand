@@ -2,89 +2,75 @@
 
 [![tests](https://github.com/ZephyrAssa/dsh-desktop-hand/actions/workflows/tests.yml/badge.svg)](https://github.com/ZephyrAssa/dsh-desktop-hand/actions/workflows/tests.yml)
 
-**Hands and eyes for a DSH agent on Windows.** Capture any window's own content
-*even while it is fully occluded*, click by coordinate, type Unicode text that
-bypasses the IME, and focus windows — all as agent-callable tools.
+Windows desktop control for a DSH agent, as six agent-callable tools.
 
 > A plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
-> **Windows only** (uses `user32` / `gdi32` / `shcore` via PowerShell).
-> Verified on PowerShell 5.1 (Windows 10/11) and pwsh 7 on GitHub's
-> `windows-latest` runner.
+> **Windows only.**
 
 ---
 
-## Why this exists
+## 特性
 
-I surveyed 8 DSH plugins that can touch the desktop. **Not one had all four of
-these capabilities *plus* occluded-window capture:**
+**抓被遮挡的窗口。** 这是本插件最重要的一条。`desktop_capture` 指定窗口时走
+`PrintWindow`，抓到的是**窗口自己的内容**——即使它被别的窗口完全盖住。
+抓全屏走 `CopyFromScreen`，只能抓到遮挡者。
 
-| Plugin | Window capture | Click | Keyboard | Focus | **Occluded capture** |
-| --- | :-: | :-: | :-: | :-: | :-: |
-| **dsh-desktop-hand** | ✅ | ✅ | ✅ | ✅ | ✅ **PrintWindow** |
-| Altairpaca/dsh-computer-use-windows | ✅ | ✅ | ✅ | ✅ | ❌ `CopyFromScreen` clipped to window rect |
-| cbg33695/dsh-screen-reader | ✅ | ❌ | ❌ | ❌ | ✅ |
-| @paicat1/dsh-screenshot | hover-snap only | ❌ | ❌ | ❌ | ✅ |
-| 988hj7tczd-oss/dsh-computer-use | ✅ | ✅ | ✅ | ✅ | ⚠️ unverified |
-| ysr666/dsh-vision-router | ❌ virtual screen only | ❌ | ❌ | ❌ | ❌ |
-| ankye/dsh-client-vision | ✅ by id | ❌ | ❌ | ❌ | ❌ |
-| FuqiangCraft/dsh-desktop | ❌ primary display only | ❌ | ❌ | ❌ | ❌ |
+同一时刻、同一个目标窗口，被一个最大化窗口完全盖住，两种抓法对比
+（`lib/occlusion-test.ps1` 自动构造这个场景并给出客观判据）：
 
-The ecosystem splits cleanly in half:
-
-- plugins that use **PrintWindow** (so occlusion works) **never touch input**;
-- plugins that **inject input** capture windows with `CopyFromScreen` — so an
-  occluded window returns *whatever is covering it*.
-
-The one four-capability plugin (Altairpaca) has no `PrintWindow` call anywhere in
-its `helper/cu.ps1`, and `988hj7tczd-oss/dsh-computer-use` — architecturally the
-most serious of the group — explicitly marks Windows as **⛔ BLOCKED / unvalidated**.
-
-This plugin fills that specific gap.
-
-### Proof, not a claim
-
-Target window fully covered by a maximized blocker, both captures at the same instant:
-
-| Capture mode | Result |
+| 抓法 | 结果 |
 | --- | --- |
-| full screen (`CopyFromScreen`) | 2560×1440 — **only the blocker**; target invisible |
-| target window (`PrintWindow`) | 1115×628 — **target's own title bar and content visible** |
+| 全屏 | **屏幕上实际可见的整屏**，即只有遮挡者，目标窗口完全不可见 |
+| 指定窗口 | **目标窗口自己的尺寸与内容**，标题栏和正文清晰可见，与遮挡前的抓取一致 |
 
-`lib/occlusion-test.ps1` builds this scenario and prints objective pass/fail criteria.
+关键判据不是尺寸大小（窗口本来就可以比屏幕大），而是：
+**指定窗口抓到的图既等于目标窗口自身的 rect，又不等于全屏图**——这正是
+`PrintWindow` 与 `CopyFromScreen` 的分水岭。
 
----
+**截图直接返回给模型。** `desktop_capture` 的结果里带图片本体，
+不需要再调一次 `read_image`。
 
-## Tools
+**输入绕过输入法。** `desktop_type` 走 `SendInput + KEYEVENTF_UNICODE` 直投字符。
+中文、`%.15f` 这类格式符都能原样送达——用 `VkKeyScan` 走的键盘布局通路会被中文
+输入法改写。
 
-| Tool | Purpose |
+**坐标是物理像素。** 引擎每层都声明 DPI 感知，截图里的像素坐标可直接用于点击。
+若截图宽与物理屏宽不一致，结果里会给出 `coordScale` 供换算。
+
+**点击会回报落点。** `desktop_click` 校验光标最终位置并与目标比对，
+落点不对会明确告诉你，而不是静默失败。
+
+**六个工具：**
+
+| 工具 | 用途 |
 | --- | --- |
-| `desktop_diagnose` | Health check: can synthetic input be trusted *right now*? |
-| `desktop_list_windows` | Enumerate windows: handle, PID, process, title, rect, UWP / minimized flags |
-| `desktop_capture` | Full screen / a specific window (by title or handle) / region crop. **Returns the image to the model directly** — no second `read_image` call |
-| `desktop_focus` | Bring a window to the foreground, and *report whether it truly became foreground* |
-| `desktop_click` | Click / double-click / right-click / drag, with landing-point verification |
-| `desktop_type` | Type text (Unicode injection) or send a whitelisted key / combo |
+| `desktop_diagnose` | 体检：此刻合成输入可不可信（DPI / 屏幕 / 前台窗口 / 输入法 / 远程软件 / 光标落点稳定性） |
+| `desktop_list_windows` | 列窗口：句柄、PID、进程、标题、位置尺寸、是否 UWP、是否最小化 |
+| `desktop_capture` | 截屏：全屏 / 指定窗口（标题或句柄）/ 区域裁切，**图片直接返回** |
+| `desktop_focus` | 把窗口拉到前台，并**报告是否真的成功** |
+| `desktop_click` | 点击 / 双击 / 右键 / 拖动，带落点校验 |
+| `desktop_type` | 输入文本（Unicode 直投）或发送白名单按键 |
 
-Typical flow:
+**已知边界（不是 bug）：**
 
-```
-desktop_list_windows           → find the target, take its handle
-desktop_capture(handle=...)    → look at it, measure coordinates
-desktop_focus(handle=...)      → or desktop_click the window body to get focus
-desktop_type(text="...")       → type
-desktop_capture(handle=...)    → look again to confirm
-```
+- **UWP 应用抓不到内容**（设置、计算器等）。`PrintWindow` 对走 DirectComposition
+  渲染的 UWP 是硬盲区，PowerShell 侧无法绕过。工具会返回 `uwpWarning`——
+  此时**不要根据那张图判断界面状态**。
+- **最小化的窗口**尺寸退化，抓到的内容无意义（返回 `minimized: true`）。
+- **远程会话正在操作鼠标时，合成点击不可靠**：坐标会被实时覆盖，调参无用。
+  用 `desktop_diagnose` 确认，等远端空闲即可。**不要杀远程控制进程**，那会断连。
+- 黑像素比例仅供参考，**不是成功判据**（实测 UWP 宿主黑像素仅 2.9%，图像却是空白框架）。
 
 ---
 
-## Install
+## 安装
 
 ```bash
-dsh plugin --profile web add github:YOURNAME/dsh-desktop-hand
+dsh plugin --profile web add github:ZephyrAssa/dsh-desktop-hand
 ```
 
-Or manually — clone anywhere, then add **all three** entries to your profile's
-`package.json` (`~/.dsh/profiles/web/package.json`):
+或手工安装——把仓库 clone 到任意位置，然后在 profile 的 `package.json`
+（`%APPDATA%\dsh-desktop\harness\profiles\web\package.json`）里加上**三处**：
 
 ```jsonc
 {
@@ -93,7 +79,7 @@ Or manually — clone anywhere, then add **all three** entries to your profile's
   },
   "dsh": {
     "profile": {
-      "bundles": [ /* ...existing..., */ "dsh-desktop-hand" ]
+      "bundles": [ /* ...原有条目..., */ "dsh-desktop-hand" ]
     }
   },
   "pnpm": {
@@ -104,182 +90,174 @@ Or manually — clone anywhere, then add **all three** entries to your profile's
 }
 ```
 
-Then run `pnpm install` inside the profile directory and restart DSH
-(the bundle list is read at startup).
+然后在 profile 目录里 `pnpm install`，重启 DSH（bundle 列表在启动时读取）。
 
-> ⚠️ **Use the bundle channel OR a manual `cordis.patch.yml` mount row — never both.**
-> Declaring it twice double-mounts the plugin; tool registration then fails with
-> "already registered", which can prevent DSH from starting.
+**环境要求：** Windows 10/11、PowerShell 5.1（系统自带）、Node `^22.19.0 || >=24.0.0`。
 
-> ⚠️ **A DSH upgrade rewrites the profile and drops local plugin entries.**
-> After upgrading, re-check all three entries above, `pnpm install`, and restart.
-> See [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) — including a startup-failure
-> incident this plugin caused before it was hardened.
+**三处缺一不可**：只有 `overrides` 而没有 `dependencies` + `bundles` 是无效状态，不会加载。
 
-### Requirements
+> ⚠️ **bundle 通道和 profile 的 `cordis.patch.yml` 手工挂载行，只能用一个。**
+> 两者都写会双重挂载，工具注册时报 "already registered"，可能导致 DSH 起不来。
 
-- Windows 10/11
-- PowerShell 5.1 (ships with Windows)
-- Node `^22.19.0 || >=24.0.0`
+> ⚠️ **DSH 升级会重写 profile，把本地插件条目删掉。** 升级后请复查上面三处是否齐全。
+> 细节与排查见 [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)。
 
----
+**配置项**（在 profile 里作为插件的 `config` 传入，一般不用改）：
 
-## Configuration
-
-Supplied as the plugin's `config` in the profile:
-
-| Key | Default | Meaning |
+| 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enginePath` | bundled `lib/desktop-hand.ps1` | Engine script path |
-| `timeoutMs` | `60000` | Per-call timeout (first call compiles `Add-Type`, ~1.2 s) |
-| `outputDir` | system temp | Default directory for captured PNGs |
+| `enginePath` | 包内 `lib/desktop-hand.ps1` | 引擎脚本路径 |
+| `timeoutMs` | `60000` | 单次调用超时（首次要编译 `Add-Type`，约 1.2 s） |
+| `outputDir` | 系统临时目录 | 截图默认落盘目录 |
 
 ---
 
-## Design constraints (read before changing anything)
+## 使用
 
-Each of these was learned the hard way and is load-bearing.
+agent 装上后会自动获得这六个工具。典型流程：
 
-**1. Window capture uses `PrintWindow` + `PW_RENDERFULLCONTENT(2)`.**
-This is the whole point of the plugin. Only `PrintWindow` retrieves an occluded
-window's *own* content; `CopyFromScreen` returns whoever is on top. The flag
-**must** be `2`: `flag=0` yields 100% black for UWP windows, `flag=2` reduces that
-to 71.7%.
+```
+desktop_list_windows            → 找到目标，拿句柄
+desktop_capture(handle=...)     → 看图，量出要点哪里
+desktop_focus(handle=...)       → 或 desktop_click 点窗口体拿焦点
+desktop_type(text="...")        → 输入
+desktop_capture(handle=...)     → 再看图确认结果
+```
 
-**2. Text injection uses `SendInput` + `KEYEVENTF_UNICODE`.**
-**Not** `VkKeyScan` + `keybd_event` — that path runs through the keyboard
-layout / IME layer, and a Chinese IME rewrites it. Measured: asking for
-`third batch` delivered 「第三批」. Unicode direct injection bypasses the IME, so
-Chinese text and format specifiers like `%.15f` arrive intact.
+### 四条使用要点
 
-**3. Coordinates are physical pixels, with DPI awareness declared.**
-At 2560×1440 with 150% scaling, without declaring DPI awareness
-`SetCursorPos(42,1046)` lands at physical (56,1395), while `GetCursorPos` divides
-back and reports (1280,720) — "the click isn't where I said it was". Declaring it
-makes coordinates 1:1. Capture results include `coordScale` when a screenshot's
-width differs from the physical screen width.
+**1. 要看窗口内容就用 `window`/`handle`，不要抓全屏**——除非你确实要看屏幕上真实
+可见的东西。指定窗口走 `PrintWindow`，被遮挡也能抓到目标自己的内容。
 
-**4. Console output must be explicitly UTF-8.**
-PowerShell 5.1 encodes redirected stdout using the **console ANSI code page**
-(GBK/936 on the dev machine), while Node decodes as UTF-8 — so every non-ASCII
-error message becomes mojibake. The engine sets
-`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` as its first action.
-**Removing that line does not error; it silently corrupts every message.**
+**2. 看图和点图用同一张图。** `desktop_capture` 结果的 `width` 若与物理屏宽不一致，
+把该 `width` 作为 `shotWidth` 传给 `desktop_click`。一致时图中像素坐标 1:1 可用。
 
-**5. Subprocesses go through the harness seam, not raw `spawn`.**
-Official plugins use `ctx.subprocess.spawn`. This is not merely style: **the DSH
-sandbox rejects Node spawning a child with piped stdio** (raw `spawn` → `EPERM`;
-`stdio: 'inherit'` works). The plugin uses `ctx.subprocess`, keeping raw `spawn`
-only as a fallback for standalone testing.
+**3. 不要用黑像素比例判断抓取成功，必须看图。** UWP 应用是盲区，工具会给
+`uwpWarning`。
 
-Three contracts there are silent-failure traps — all asserted in
-`lib/selftest-harness.mjs`:
+**4. 点不准或输入丢失时，先跑 `desktop_diagnose`，不要调坐标。** 它会连采两次
+光标落点：稳定=可用；持续漂移=有别的输入源在覆盖（通常是远程会话）。这是环境
+问题，改代码没用。
 
-| Contract | Failure mode if missed |
-| --- | --- |
-| `graceMs` is **required** | every call throws |
-| `handle.collected.stdout` is a *collector*; call `finalize()` for `{ text }` | reading `.text` yields `undefined`; every tool reports "no output" |
-| the spec has **no** `timeoutMs` field — the caller owns the deadline | the timeout silently never fires |
+### 命令行直接调引擎
 
-**6. A required plugin must never throw from `apply()`.**
-If a plugin is listed as required and `apply()` throws, **the entire DSH startup
-fails** and the app enters safe mode — which rewrites the profile and removes the
-plugin. Cosmetic extras (such as the system-prompt section) are therefore wrapped
-in `try/catch` and only warn on failure. See
-[`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md).
-
----
-
-## Known boundaries (not bugs)
-
-- **UWP apps cannot be captured** (Settings, Calculator, …). `PrintWindow` is blind
-  to DirectComposition-rendered UWP content, and there is no workaround from
-  PowerShell (WGC would require MSIX package identity). The tool returns
-  `uwpWarning` — **do not judge UI state from that image.**
-- **Minimized windows** degenerate in size; the capture is meaningless.
-  The result carries `minimized: true`.
-- **An active remote-control session makes synthetic clicks unreliable.** While
-  someone is driving the real cursor remotely, synthetic coordinates are
-  continuously overwritten — no amount of coordinate tuning helps. Use
-  `desktop_diagnose` to confirm, then wait for the remote session to go idle.
-  **Do not kill the remote-control process**; that drops the remote connection.
-- **Windows only.**
-- The black-pixel ratio is reported for reference and is **not** a success test: a
-  UWP host measured 2.9% black while being an empty frame. **Look at the image.**
-
----
-
-## Tests
+引擎也可脱离 DSH 单独使用，输出单行 JSON：
 
 ```powershell
-.\lib\link-deps.ps1               # link peer deps for standalone runs (not needed under DSH)
-.\lib\selftest.ps1                # 37 checks — engine
-node .\lib\selftest.mjs           # 79 checks — tool layer (incl. version-compat regressions)
-node .\lib\selftest-harness.mjs   # 18 checks — harness subprocess seam contract
-.\lib\occlusion-test.ps1          #  8 checks — occluded capture (inspect the images)
+$e = ".\lib\desktop-hand.ps1"
+& $e -Action info                                    # 体检：DPI/屏幕/前台/输入法/远程软件
+& $e -Action list-windows                            # 列窗口，拿句柄
+& $e -Action capture -Window "Notepad" -OutPath a.png # 后台抓窗口（被遮挡也行）
+& $e -Action capture -Handle 1234567 -OutPath b.png   # 按句柄抓
+& $e -Action capture -FullScreen -Region "0,0,800,600"  # 全屏后裁切
+& $e -Action click -X 640 -Y 360 -ShotWidth 1280      # 点击（坐标取自截图）
+& $e -Action click -X 100 -Y 100 -ToX 400 -ToY 400    # 拖动（给 ToX/ToY）
+& $e -Action type -Text "disp(1+1)" -Enter            # 输入（绕过输入法）
+& $e -Action key -Key ctrl+s                          # 发按键
+& $e -Action focus -Window "MATLAB"                   # 拉到前台
+& $e -Action probe -X 400 -Y 400                      # 检测有无输入源在覆盖光标
+```
+
+坐标系是**截图里的像素**。`-ShotWidth` 传你所用截图的真实宽度；截图与物理屏 1:1 时
+可省略。`capture` 的结果里会给出 `coordScale` 与 `originX/originY` 供换算。
+
+可用动作（9 个）：`info` `list-windows` `capture` `click` `move` `probe` `type` `key` `focus`。
+拖动是 `click` 的参数（同时给 `-ToX`/`-ToY` 即为拖动），不是独立动作。
+
+### 自检
+
+```powershell
+.\lib\link-deps.ps1               # 为脱离 DSH 的自检链接 peer 依赖
+.\lib\selftest.ps1                # 37 项 — 引擎
+node .\lib\selftest.mjs           # 79 项 — 工具层
+node .\lib\selftest-harness.mjs   # 18 项 — harness 子进程契约
+.\lib\occlusion-test.ps1          #  8 项 — 遮挡抓取（需肉眼看图）
 .\lib\link-deps.ps1 -Clean
 ```
 
-**142 checks, 0 failures**, stable across repeated local runs and green on
-GitHub's `windows-latest` runner. The keyboard round-trip is verified
-objectively: the typed text changes the target window's title, which is then read
-back — including a Chinese case that would fail if the IME were not bypassed.
+142 项，本地与 GitHub `windows-latest` 均全绿。依赖真实桌面的检查（窗口枚举、
+键鼠闭环、遮挡抓取）在环境不满足时**跳过而非失败**——环境无法构造场景不等于代码
+有缺陷。`fail` 是唯一代表代码坏了的信号。
 
-### A note on environment-dependent checks
-
-Some checks depend on the machine having a real interactive desktop (window
-enumeration, the keyboard round-trip, occluded capture). A CI runner is not a
-full desktop, so those checks **skip** when their precondition is absent rather
-than fail — an environment that cannot host the scenario is not evidence of a
-defect. The summary line reports pass / fail / skip separately.
-
-`fail` is the only signal that means the code is broken; the suites exit non-zero
-only for that. Both scripts also exit explicitly on the success path, because a
-script that only exits on failure can hand the caller an exit code that
-contradicts its own verdict.
-
-### What CI cannot cover
-
-The suites drive the real Win32 APIs, and `selftest.mjs` verifies that `apply()`
-registers all six tools with valid schemas — but **whether the plugin loads
-inside a running DSH process is not tested**, because that requires a DSH install
-and a restart. See [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) §5 for the
-manual check.
+CI 覆盖不到"插件能否在运行中的 DSH 里加载"，那需要装 DSH 并重启；
+`docs/COMPATIBILITY.md` 第 5 节有手工检查清单。
 
 ---
 
-## Layout
+## 架构
+
+两层，中间用单行 JSON 通信。
+
+```
+┌─ DSH agent ────────────────────────────────────────────┐
+│  desktop_diagnose / list_windows / capture / focus /   │
+│  click / type          ← 6 个 defineTool               │
+└───────────────────────┬────────────────────────────────┘
+                        │  ctx.subprocess.spawn
+                        │  argv + JSON on stdout
+┌───────────────────────▼────────────────────────────────┐
+│  lib/desktop-hand.ps1   PowerShell 引擎                │
+│  P/Invoke → user32 / gdi32 / shcore / dwmapi / imm32   │
+└────────────────────────────────────────────────────────┘
+```
+
+### `lib/index.js` — 工具层（Node, ESM）
+
+- 用 `defineTool` 注册 6 个工具。参数是 dsh-tools 的**扁平 JSON-Schema 属性表**
+  （不是 schemastery，后者只用于插件自己的 `Config`）。
+- 经 `ctx.subprocess.spawn` 起引擎。**不用裸 `node:child_process`**：DSH 沙箱会
+  拒绝 Node 以管道 stdio 起子进程（裸 `spawn` 报 `EPERM`）。裸 `spawn` 仅作脱离
+  DSH 时的退路。
+- 截图通过 `finalizeContent` 钩子把 PNG 交给附件服务，追加成 `image` 内容块。
+  不能塞进返回值——`output.schema` 是 `additionalProperties: false`，多余键会校验失败。
+- 引擎返回 `ok:false` 时抛带提示的异常，让模型能自我纠正（比如"标题匹配到多个窗口，
+  请用 handle"）。
+
+### `lib/desktop-hand.ps1` — 引擎（PowerShell）
+
+单个脚本，`-Action` 分发，恒向 stdout 输出单行 JSON。设计上有五条硬约束，
+每条都是实测踩出来的，改动前请先读文件头的注释：
+
+**1. 抓窗口用 `PrintWindow` + `PW_RENDERFULLCONTENT(2)`。**
+flag 必须是 `2`：`flag=0` 对 UWP 是 100% 黑，`flag=2` 降到 71.7%，即 0 更糟。
+
+**2. 文本注入用 `SendInput + KEYEVENTF_UNICODE`。**
+不能用 `VkKeyScan` + `keybd_event`——那条路经过键盘布局/输入法层，会被改写
+（实测想要 `third batch`，目标程序收到的是「第三批」）。
+
+**3. 坐标按物理像素，且 DPI 感知要显式声明。**
+2560×1440 + 150% 缩放时，不声明 DPI 感知会让 `SetCursorPos(42,1046)` 落到物理
+(56,1395)，而 `GetCursorPos` 又除回去报 (1280,720)——表现是"点的位置和说的不一样"。
+
+**4. 输出必须是显式 UTF-8。**
+PowerShell 5.1 在 stdout 被重定向时按**控制台 ANSI 代码页**（本机 GBK/936）编码，
+而 Node 按 UTF-8 解码，于是所有非 ASCII 错误信息变乱码。引擎第一件事就是设
+`[Console]::OutputEncoding = UTF8`。**删掉这行不会报错，只会静默毁掉所有中文提示。**
+
+**5. `apply()` 绝不能抛异常。**
+插件在 profile 里是 `required: true`，`apply()` 抛错会让**整个 DSH 启动失败**并进
+安全模式，进而重写 profile 把插件删掉。所以系统提示段落这类锦上添花的东西整段包在
+`try/catch` 里，失败只 warning。详见 [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)。
+
+### 文件
 
 ```
 dsh-desktop-hand/
-├── package.json                  dsh.bundle.patch is the field that makes it loadable
-├── cordis.patch.yml              bundle mount declaration
+├── package.json                  dsh.bundle.patch 是能被加载的关键字段
+├── cordis.patch.yml              bundle 挂载声明
 ├── README.md
 ├── docs/
-│   ├── COMPATIBILITY.md          DSH version compatibility & the startup-failure incident
-│   └── ENGINEERING-NOTES.zh-CN.md  detailed field notes (Chinese)
-├── skills/desktop-hand/          agent-facing skill
+│   ├── COMPATIBILITY.md          DSH 版本兼容与启动失败事故记录
+│   └── ENGINEERING-NOTES.zh-CN.md  详细工程笔记（中文，含每个 bug 的定位过程）
+├── skills/desktop-hand/          给 agent 的用法 skill
 └── lib/
-    ├── index.js                  6 defineTool registrations + attachment image return
-    ├── desktop-hand.ps1          PowerShell engine
-    ├── selftest.ps1              engine checks
-    ├── selftest.mjs              tool-layer checks
-    ├── selftest-harness.mjs      subprocess-seam contract checks
-    ├── occlusion-test.ps1        occluded-capture proof
-    └── link-deps.ps1             create/remove peer-dep links for standalone runs
+    ├── index.js                  6 个 defineTool + 图片返回
+    ├── desktop-hand.ps1          PowerShell 引擎
+    ├── selftest.ps1              引擎自检
+    ├── selftest.mjs              工具层自检
+    ├── selftest-harness.mjs      子进程 seam 契约自检
+    ├── occlusion-test.ps1        遮挡抓取验证
+    └── link-deps.ps1             为脱离 DSH 的自检建/清依赖链接
 ```
-
----
-
-## Credits & scope
-
-The `PrintWindow`, Unicode-injection, and DPI-awareness findings come from earlier
-field notes on the author's machine; this plugin packages them as a globally
-installable DSH plugin so any workspace can use them.
-
-The detailed engineering notes — including every bug hit during development and how
-it was diagnosed — are kept in Chinese in
-[`docs/ENGINEERING-NOTES.zh-CN.md`](docs/ENGINEERING-NOTES.zh-CN.md), in the language
-they were diagnosed in. The English sections here are a faithful summary.
 
 MIT licensed — see [`LICENSE`](LICENSE).
