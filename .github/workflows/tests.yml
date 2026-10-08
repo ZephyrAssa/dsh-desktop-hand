@@ -38,6 +38,18 @@ jobs:
       - name: Install peer dependencies
         run: npm install --no-save --no-audit --no-fund @deepseek-ai/dsh-tools @deepseek-ai/schemastery
 
+      # Contract guards against the host's tool-result serialization path. These
+      # read the *upstream* source, so they skip cleanly when the installed npm
+      # build differs from a desktop install (they look for the real app dir).
+      - name: Serialization contract guards
+        shell: pwsh
+        run: |
+          node ./lib/verify-serialization-contract.mjs
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::serialization contract guards failed"
+            exit $LASTEXITCODE
+          }
+
       # Diagnostics first: a CI runner is not a full interactive desktop, so it is
       # worth recording what the environment actually looks like when a test fails.
       - name: Describe the runner environment

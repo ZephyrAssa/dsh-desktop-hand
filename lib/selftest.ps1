@@ -243,22 +243,36 @@ if ($mv.ok) {
     # （实测每次都不一样：1114,1009 / 1364,517 / 1699,1675 / 2041,678）。
     # 那是环境干扰，不是本插件的 bug —— 和下面 probe 的处理保持一致：
     # 有桌面但光标被推走时判 SKIP 并解释，只有"没有干扰却还不准"才是 FAIL。
+    #
+    # ⚠️ 光看 $mv 自己不够：干扰可能刚好在 move 与下面的 probe 之间停了一下，
+    # 于是 probeA/probeB 都落在 400,400 上（判定"无干扰"），而 move 那次读回的
+    # 却仍是被推走的值 —— 实测就是这样偶发报 FAIL 的（第 6 次：got=195,372，
+    # 同时 probe 判为稳定）。所以这里**先做 probe、再判 move**，用 probe 的结论
+    # 决定 move 该 FAIL 还是 SKIP。
+    $pr = Run @{ Action = 'probe'; X = 400; Y = 400 }
+    $probeOk = [bool]$pr.ok
+    $probeStable = $probeOk -and
+        ($pr.probeA -match '^400,400') -and ($pr.probeB -match '^400,400')
+
     $want = "$mx,$my"
     if ($mv.cursor -eq $want) {
         Check 'move 后光标落在目标点' $true
     } elseif (-not $desktopOk) {
         # 无交互桌面时 SetCursorPos 可能根本不生效，这不是代码问题。
         Skip 'move 后光标落在目标点' '本环境没有可交互桌面，光标定位不适用'
+    } elseif (-not $probeStable) {
+        # probe 独立证明了确实有别的输入源在驱动光标 —— 之前那次读数不足为证。
+        Skip 'move 后光标落在目标点' "有别的输入源在驱动光标（probe 证实）；got=$($mv.cursor)"
+        Write-Host "        move got=$($mv.cursor)（被推走）" -ForegroundColor Yellow
     } else {
-        Check 'move 后光标落在目标点' $false "want=$want got=$($mv.cursor)（若下方 probe 也报被推走，则是远端干扰而非缺陷）"
+        # 光标稳定、桌面可用，move 却仍没落在目标点 —— 这才是真缺陷。
+        Check 'move 后光标落在目标点' $false "want=$want got=$($mv.cursor)（probe 判为无干扰，故非环境问题）"
     }
 }
 
-$pr = Run @{ Action = 'probe'; X = 400; Y = 400 }
-Check 'probe 返回 ok' ([bool]$pr.ok) $pr.error
-if ($pr.ok) {
-    $stable = ($pr.probeA -match '^400,400') -and ($pr.probeB -match '^400,400')
-    if ($stable) {
+Check 'probe 返回 ok' $probeOk $pr.error
+if ($probeOk) {
+    if ($probeStable) {
         Check '落点稳定（无其他输入源）' $true
     } elseif (-not $desktopOk) {
         # 无交互桌面时 setcursorpos 可能根本不生效，这不是代码问题。

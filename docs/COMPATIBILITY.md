@@ -145,12 +145,16 @@ Parameter schemas are a flat property map validated by `defineTool` — not
 .\lib\selftest.ps1
 node .\lib\selftest.mjs
 node .\lib\selftest-harness.mjs
+node .\lib\verify-serialization-contract.mjs   # re-checks section 7 against the new build
 .\lib\occlusion-test.ps1
 .\lib\link-deps.ps1 -Clean
 ```
 
 These run standalone, so a failing one means the plugin needs a fix — not that DSH
-is at fault.
+is at fault. On a version bump pay particular attention to
+`verify-serialization-contract.mjs`: it reads the host's source and asserts the
+behaviour section 7 depends on, so if an upgrade closes the async trap or changes
+what the validator rejects, it fails there instead of in production.
 
 **After restarting** — confirm the plugin did not break startup:
 
@@ -445,3 +449,26 @@ you are testing your `await` rather than the contract.
 `execute()`, stashing the prepared block in module-level state that the sync hook
 reads back. The implementation and this reasoning are recorded in a comment at
 `lib/index.js:571-595` so it is not "simplified" back into an `async` function later.
+
+### 7.6 Guarding the contracts themselves
+
+`lib/selftest.mjs` proves our *code* is correct against the host's behaviour. It
+cannot catch the host *changing* that behaviour. `lib/verify-serialization-contract.mjs`
+therefore reads `dsh-tools` / `dsh-util-values` source directly and pins the four
+facts this section depends on:
+
+| Guard | Fails when |
+| --- | --- |
+| `snapshotJsonValue` accepts/rejects | an upgrade starts accepting `undefined`, `NaN`, `Date`, … or stops accepting `null` |
+| `applyFinalContent` has no `await` | upstream starts awaiting the hook — the async trap closes and 7.5 must be rewritten |
+| `lib/index.js` declares no `async finalizeContent` | our own hook regresses |
+| `EngineError` guards its `code` assignment | the `in`-operator trap of 7.3 returns |
+
+It resolves the DSH install the same way `link-deps.ps1` does and prints the
+`dsh-tools` version it validated, so a stale install cannot make it pass against the
+wrong build. Where no desktop install is present — CI, for instance — it prints
+`SKIP` and exits 0, because the npm build of `dsh-tools` differs from the desktop one.
+
+Like the §5 scanner, it is validated in **reverse**: reverting the `EngineError` guard
+makes it fail immediately with
+`EngineError assigns code unconditionally -- see docs/COMPATIBILITY.md 7.3`.

@@ -169,15 +169,22 @@ $e = ".\lib\desktop-hand.ps1"
 ```powershell
 .\lib\link-deps.ps1               # 为脱离 DSH 的自检链接 peer 依赖
 .\lib\selftest.ps1                # 37 项 — 引擎
-node .\lib\selftest.mjs           # 79 项 — 工具层
+node .\lib\selftest.mjs           # 111 项 — 工具层
 node .\lib\selftest-harness.mjs   # 18 项 — harness 子进程契约
+node .\lib\verify-serialization-contract.mjs   # 25 项 — 宿主序列化契约
 .\lib\occlusion-test.ps1          #  8 项 — 遮挡抓取（需肉眼看图）
 .\lib\link-deps.ps1 -Clean
 ```
 
-142 项，本地与 GitHub `windows-latest` 均全绿。依赖真实桌面的检查（窗口枚举、
+199 项，本地与 GitHub `windows-latest` 均全绿。依赖真实桌面的检查（窗口枚举、
 键鼠闭环、遮挡抓取）在环境不满足时**跳过而非失败**——环境无法构造场景不等于代码
 有缺陷。`fail` 是唯一代表代码坏了的信号。
+
+`verify-serialization-contract.mjs` 与其它四套不同：它读的是**宿主的源码**，
+用来钉住我们依赖的上游行为（`snapshotJsonValue` 接受/拒绝哪些值、
+`applyFinalContent` 是否 `await` 钩子、`undefined` 属性在 `in` 与 `JSON.stringify`
+眼里不一致）。它在找不到桌面版 DSH 时**跳过**，因为 npm 上的 `dsh-tools`
+与桌面安装的版本不同；找不到时打印一行 `SKIP` 并 exit 0。
 
 CI 覆盖不到"插件能否在运行中的 DSH 里加载"，那需要装 DSH 并重启；
 `docs/COMPATIBILITY.md` 第 5 节有手工检查清单。
@@ -247,7 +254,9 @@ dsh-desktop-hand/
 ├── cordis.patch.yml              bundle 挂载声明
 ├── README.md
 ├── docs/
-│   ├── COMPATIBILITY.md          DSH 版本兼容与启动失败事故记录
+│   ├── COMPATIBILITY.md          DSH 版本兼容、启动失败事故、三个序列化陷阱
+│   ├── INCIDENT-2026-10-03-...  图片块序列化故障的原始排查报告（中文）
+│   ├── evidence/                故障报告引用的实拍图
 │   └── ENGINEERING-NOTES.zh-CN.md  详细工程笔记（中文，含每个 bug 的定位过程）
 ├── skills/desktop-hand/          给 agent 的用法 skill
 └── lib/
@@ -256,6 +265,7 @@ dsh-desktop-hand/
     ├── selftest.ps1              引擎自检
     ├── selftest.mjs              工具层自检
     ├── selftest-harness.mjs      子进程 seam 契约自检
+    ├── verify-serialization-contract.mjs  宿主序列化契约守卫
     ├── occlusion-test.ps1        遮挡抓取验证
     └── link-deps.ps1             为脱离 DSH 的自检建/清依赖链接
 ```
