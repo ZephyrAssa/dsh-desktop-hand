@@ -225,3 +225,152 @@ would otherwise abort startup:
 const mod = await import('file:///C:/Users/<you>/.dsh/profiles/web/node_modules/dsh-desktop-hand/lib/index.js');
 await mod.apply(stubCtx, {});   // must not throw; registers the six desktop_* tools
 ```
+
+**5. Make sure you wrote to the profile DSH actually loads.** A DSH NEXT install
+here had **two** profiles on disk — `web` (carried over in name from the old
+machine) and `desktop` (created fresh by DSH NEXT, and the one in use). Installing
+into the wrong one produces a perfectly healthy plugin that never appears, with **no
+error anywhere**, because the other profile is simply not the one being composed.
+
+Tell them apart by modification time, not by name:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\.dsh\profiles" -Directory |
+  Select-Object Name, LastWriteTime
+```
+
+The active profile is the one whose timestamp moves when DSH starts. Confirm its
+bundle list actually names the plugin, and that *that* profile's `node_modules`
+resolves — a link in the other profile proves nothing:
+
+```powershell
+$act = "$env:USERPROFILE\.dsh\profiles\desktop"   # <- the one you verified above
+(Get-Item "$act\node_modules\dsh-desktop-hand").Target
+```
+
+---
+
+## 7. Two silent-failure traps in the tool-result serialization path
+
+Both of these surfaced the same way — a *different* agent's tool call failing with:
+
+```
+tool result must be losslessly JSON-serializable
+```
+
+They were two distinct bugs on two distinct paths (success and error), and neither
+was visible from the plugin's own code review. Recorded because the mechanism is
+sharp and easy to reproduce.
+
+### 7.1 The rule: an `undefined` **property value** rejects the whole result
+
+The validator is `materializePresentation` (`dsh-tools/lib/index.js:2604`):
+
+```js
+function materializePresentation(candidate) {
+  const detached = snapshotJsonValue(candidate);
+  if (detached === void 0) throw new TypeError("tool result must be losslessly JSON-serializable");
+  return deepFreeze(detached);
+}
+```
+
+`snapshotJsonValue` (`dsh-util-values/lib/index.js:159`) walks the value **strictly**.
+Verified by experiment, these all reject the entire result:
+
+- **any property whose value is `undefined`** — it is *not* coerced to `null`
+- functions, `Symbol`, `BigInt`, `NaN`, `Infinity`
+- `Date` instances, circular references, arrays containing `undefined`
+
+**`null` is fine.** That distinction is the whole game: `null` is a value you may
+send, `undefined` is a hole that discards everything around it.
+
+Do not confuse this error with the *other* validator. They produce different text:
+
+| Cause | Message |
+| --- | --- |
+| value is `undefined` / unserializable | `tool result must be losslessly JSON-serializable` |
+| extra key, given `additionalProperties: false` | `tool "x" returned invalid output: unexpected key "y"` |
+
+### 7.2 Bug one — success path, fields copied straight from the engine
+
+`desktop_capture` and `desktop_list_windows` passed engine fields through directly
+(`bytes: payload.bytes`, `handle: w.handle`). Whenever the engine omitted one — an
+error shape, an older engine, a partially-built window record — the property existed
+with value `undefined` and the **entire successful result was thrown away**.
+
+Reproduced exactly by building a fake engine that omits `bytes`: the tool then
+returned an object carrying `undefined`, and the error matched the user's report
+character for character.
+
+**Fix:** required fields get `String()` / `Number.isFinite()` coercion; optional
+fields are *omitted* rather than set to `undefined`:
+
+```js
+...(x === undefined || x === null ? {} : { k: x })   // correct
+{ k: x }                                              // wrong when x is undefined
+```
+
+### 7.3 Bug two — error path, and the `in`-operator trap
+
+The harder one. `errorInfo` (`dsh-tools/lib/index.js:2608`) builds the `error` field
+of a *failed* result:
+
+```js
+function errorInfo(error) {
+  try { return error instanceof HarnessError ? { name: error.name, code: error.code } : void 0; } ...
+}
+```
+
+and `materializeFinalResult` submits `error: result.error` to the same strict walk —
+**so error results are validated too.**
+
+The plugin's `EngineError` unconditionally ran `this.code = payload.code`. When the
+engine returned `{ ok: false, error }` with no `code`, that assignment **created the
+property** with value `undefined`. Hence:
+
+- the guard is effectively `"code" in e` → **`true`** (the key exists!)
+- `errorInfo()` therefore returned `{ name: 'EngineError', code: undefined }`
+- the whole error result was rejected, and **the real error message was replaced by
+  the serialization error** — hiding the actual fault
+
+The trap worth remembering: **assigning `undefined` creates a property**, so an
+`in` check reports it as present, while `JSON.stringify` silently drops the key and
+makes it look absent. Two observers of the same object disagree:
+
+```js
+const e = new EngineError({ error: 'failed' });   // engine sent no `code`
+'code' in e          // true   ← the guard in errorInfo() sees this
+Object.keys(e)       // ['code']
+JSON.stringify(e)    // {"name":"Error"}  — no `code` at all
+```
+
+So the branch that decides whether to include `code` takes the "yes" path, while
+anything inspecting the shape by serialization cannot see the problem. Verified
+against the real `errorInfo` guard, not just reasoned about.
+
+**Fix:** only set `code` when it carries a value.
+
+```js
+const code = payload.code;
+if (code !== undefined && code !== null && code !== '') this.code = code;
+```
+
+Verified across four shapes (absent / present / empty string / `null`), and the real
+message now reaches the model, e.g. `Error: 抓取失败：窗口已关闭`.
+
+### 7.4 Guarding against regressions structurally
+
+Fixing the two known sites is not enough — the failure mode is "some new field
+somewhere is `undefined`". `lib/selftest.mjs` therefore walks **every tool path** and
+scans the returned value, `render` output, and `finalizeContent` output for
+`undefined` / functions / `Symbol` / `BigInt` / `NaN` / `Infinity` (§5), and builds
+each throwing path through a replica of `toolErrorResult()` to scan error results too
+(§5b).
+
+Two things make the scanner trustworthy rather than decorative:
+
+- **It is validated in reverse.** Reverting one line of the fix immediately makes it
+  report `bytes: undefined`. A scanner that has never failed has not been tested.
+- **§5b pins the mechanism directly**, asserting that `EngineError` does *not* create
+  a `code` property when the engine omits it, and that `code: undefined` is
+  recognized as harmful — so the `in`-operator trap cannot silently return.
