@@ -174,7 +174,7 @@ Both are silent failures if missed:
 
 | What | Old | New |
 | --- | --- | --- |
-| App modules (for self-tests) | `C:\Program Files\DSH Desktop\resources\app` | `D:\Program\DSH\DSH NEXT\resources\app` |
+| App modules (for self-tests) | `<old install>\resources\app` | `<new install>\resources\app` |
 | Harness home / profile | `%APPDATA%\dsh-desktop\harness\profiles\web` | `%USERPROFILE%\.dsh\profiles\web` |
 
 **1. `link-deps.ps1` must learn the new app path.** It auto-detects, but the
@@ -208,7 +208,7 @@ still points at the **old, deleted** app path, failing with
 with a system Node that satisfies `engines` (`^22.19.0 || >=24.0.0`):
 
 ```powershell
-node "D:\Program\DSH\DSH NEXT\resources\app\node_modules\pnpm\bin\pnpm.cjs" install `
+node "<new install>\resources\app\node_modules\pnpm\bin\pnpm.cjs" install `
   --dir "$env:USERPROFILE\.dsh\profiles\web"
 ```
 
@@ -250,7 +250,7 @@ $act = "$env:USERPROFILE\.dsh\profiles\desktop"   # <- the one you verified abov
 
 ---
 
-## 7. Two silent-failure traps in the tool-result serialization path
+## 7. Three silent-failure traps in the tool-result serialization path
 
 Both of these surfaced the same way — a *different* agent's tool call failing with:
 
@@ -258,9 +258,10 @@ Both of these surfaced the same way — a *different* agent's tool call failing 
 tool result must be losslessly JSON-serializable
 ```
 
-They were two distinct bugs on two distinct paths (success and error), and neither
-was visible from the plugin's own code review. Recorded because the mechanism is
-sharp and easy to reproduce.
+They were **three** distinct bugs on three different paths — the success path, the
+error path, and a hook's return type (§7.5) — and none was visible from the plugin's
+own code review. Recorded because the mechanism is sharp and easy to reproduce, and
+because the single message gives no hint which of the three you are looking at.
 
 ### 7.1 The rule: an `undefined` **property value** rejects the whole result
 
@@ -280,6 +281,7 @@ Verified by experiment, these all reject the entire result:
 - **any property whose value is `undefined`** — it is *not* coerced to `null`
 - functions, `Symbol`, `BigInt`, `NaN`, `Infinity`
 - `Date` instances, circular references, arrays containing `undefined`
+- **a `Promise`** — see §7.5; this is what an `async` hook accidentally produces
 
 **`null` is fine.** That distinction is the whole game: `null` is a value you may
 send, `undefined` is a hole that discards everything around it.
@@ -290,6 +292,10 @@ Do not confuse this error with the *other* validator. They produce different tex
 | --- | --- |
 | value is `undefined` / unserializable | `tool result must be losslessly JSON-serializable` |
 | extra key, given `additionalProperties: false` | `tool "x" returned invalid output: unexpected key "y"` |
+
+This one message had **three** distinct causes in this plugin, across the success
+path, the error path, and a hook's return type. When you see it, do not assume you
+already know which one you have.
 
 ### 7.2 Bug one — success path, fields copied straight from the engine
 
@@ -360,7 +366,7 @@ message now reaches the model, e.g. `Error: 抓取失败：窗口已关闭`.
 
 ### 7.4 Guarding against regressions structurally
 
-Fixing the two known sites is not enough — the failure mode is "some new field
+Fixing the known sites is not enough — the failure mode is "some new field
 somewhere is `undefined`". `lib/selftest.mjs` therefore walks **every tool path** and
 scans the returned value, `render` output, and `finalizeContent` output for
 `undefined` / functions / `Symbol` / `BigInt` / `NaN` / `Infinity` (§5), and builds
@@ -374,3 +380,68 @@ Two things make the scanner trustworthy rather than decorative:
 - **§5b pins the mechanism directly**, asserting that `EngineError` does *not* create
   a `code` property when the engine omits it, and that `code: undefined` is
   recognized as harmful — so the `in`-operator trap cannot silently return.
+
+### 7.5 Bug three — an `async` `finalizeContent`, and why review misses it
+
+This was the **original** cause of every `desktop_capture` call failing, and it is the
+sharpest of the three.
+
+`finalizeContent` is the official hook for appending content blocks after execution —
+which is how a capture tool attaches its image, since `output.schema` is
+`additionalProperties: false` and the return value cannot carry an image block.
+Written naturally it looks async; it is not. The contract
+(`dsh-tool-cordis/lib/types/api-catalog.js:7532`) is:
+
+```ts
+execute(args, exec): Promise<unknown>;
+projectContent?(exec, result): ContentBlock[] | undefined;
+finalizeContent?(exec, result): ContentBlock[] | undefined;   // <- no Promise
+```
+
+and the caller (`dsh-tools/lib/index.js:3399-3407`) does **not** await:
+
+```js
+applyFinalContent(exec, result) {
+  const finalizeContent = this.contentFinalizers.get(exec);
+  if (finalizeContent === void 0) return result;
+  const content = finalizeContent(exec, result);          // line 3402 — no await
+  return content === void 0 ? result : { ...result, content };
+}
+```
+
+So an `async` hook puts a **Promise** into `content`. A Promise's prototype is not
+`Object.prototype`, so `snapshotJsonValue` returns `undefined` and
+`materializePresentation` throws. Worse, `finishScheduledExecution` (`:3392-3394`)
+then replaces the **entire successful result — including the already-rendered capture
+text — with that error**, which is why the symptom is "the PNG is written correctly
+but the tool reports failure".
+
+Reproduced against the real `snapshotJsonValue`, transcribing `applyFinalContent`
+verbatim:
+
+```
+A) async finalizeContent
+   is a Promise?      : true
+   snapshotJsonValue  : undefined
+   materialize        : THREW -> tool result must be losslessly JSON-serializable
+B) sync finalizeContent
+   is Array?          : true
+   materialize        : passed
+```
+
+**Why this survived a first review.** Any experiment that awaits the value before
+inspecting it passes — the await hides the defect:
+
+```
+C) same async finalizer, but awaited first
+   is Array?          : true     <- looks perfectly fine
+```
+
+Only the real, un-awaited `:3402` path exposes it. When testing a hook like this,
+drive it through the actual caller; do not call it and await the result yourself, or
+you are testing your `await` rather than the contract.
+
+**Fix:** make the hook synchronous and move all async work (saving the image) into
+`execute()`, stashing the prepared block in module-level state that the sync hook
+reads back. The implementation and this reasoning are recorded in a comment at
+`lib/index.js:571-595` so it is not "simplified" back into an `async` function later.
