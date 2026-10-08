@@ -3,7 +3,8 @@
 How this plugin behaves across DSH versions, and the startup-failure incident that
 shaped its hardening.
 
-- **Currently verified against:** DSH Desktop `0.9.2` / harness `0.1.7-rc.2`
+- **Currently verified against:** DSH Desktop `0.9.2` / harness `0.1.7-rc.2`,
+  and DSH NEXT `2.0.17-next` / `@deepseek-ai/dsh 0.2.0-rc.2`
 - **Last breaking change absorbed:** `0.1.5-rc.2` → `0.1.7-rc.2`
 - **Plugin version that fixed it:** `1.0.1`
 
@@ -163,3 +164,64 @@ Get-ChildItem "$env:APPDATA\dsh-desktop\harness\logs\startup-*.log" |
 **A plugin load failure always writes `startup failed` / `required plugin did not
 activate` to this log.** It never fails silently — if those strings are absent, the
 plugin loaded.
+
+---
+
+## 6. Migrating to a differently-packaged DSH (DSH NEXT)
+
+Switching from DSH Desktop to **DSH NEXT** (`2.0.17-next`) moves two paths at once.
+Both are silent failures if missed:
+
+| What | Old | New |
+| --- | --- | --- |
+| App modules (for self-tests) | `C:\Program Files\DSH Desktop\resources\app` | `D:\Program\DSH\DSH NEXT\resources\app` |
+| Harness home / profile | `%APPDATA%\dsh-desktop\harness\profiles\web` | `%USERPROFILE%\.dsh\profiles\web` |
+
+**1. `link-deps.ps1` must learn the new app path.** It auto-detects, but the
+candidate list is finite — if the new install is not in it, the script reports
+*"未找到 DSH 安装目录"* and links only what the profile happens to provide. That is
+the dangerous outcome, because a **stale** link still resolves: the self-tests then
+validate a different `dsh-tools` version than the one that actually runs, and DSH's
+`host-module-fallback` never triggers (it only fires on
+`ERR_MODULE_NOT_FOUND`). Always confirm the printed line:
+
+```
+DSH 安装目录: ...\resources\app\node_modules\@deepseek-ai  (dsh-tools 0.2.0-rc.2)
+```
+
+**2. The profile's `node_modules` is not carried over.** `package.json` may still
+list the plugin in `dependencies` and `dsh.profile.bundles` while `node_modules`
+simply does not exist — the bundle is declared but never installed, so the plugin is
+dead config rather than a broken plugin. Check the link resolves:
+
+```powershell
+Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-desktop-hand" |
+  Select-Object LinkType, Target
+```
+
+Expected: `Junction` → your checkout. Then `pnpm install` in the profile directory.
+
+**3. Use the toolchain that ships with the *new* install.** DSH NEXT has no bundled
+`node.exe`, and a leftover `%APPDATA%\dsh-desktop\harness\.desktop-bin\pnpm.cmd`
+still points at the **old, deleted** app path, failing with
+*"The system cannot find the path specified"*. Drive pnpm through the new install
+with a system Node that satisfies `engines` (`^22.19.0 || >=24.0.0`):
+
+```powershell
+node "D:\Program\DSH\DSH NEXT\resources\app\node_modules\pnpm\bin\pnpm.cjs" install `
+  --dir "$env:USERPROFILE\.dsh\profiles\web"
+```
+
+> pnpm 11 warns `The "pnpm" field in package.json is no longer read ... "pnpm.overrides"`.
+> For this plugin that is **harmless**: `dependencies` carries the same `link:` spec,
+> which is what pnpm actually resolves to the junction. The warning is only a concern
+> for plugins that rely on `overrides` alone.
+
+**4. Verify the load without restarting DSH.** Import the plugin through the real
+profile path and drive `apply()` with a stub context — this catches an `apply()` that
+would otherwise abort startup:
+
+```js
+const mod = await import('file:///C:/Users/<you>/.dsh/profiles/web/node_modules/dsh-desktop-hand/lib/index.js');
+await mod.apply(stubCtx, {});   // must not throw; registers the six desktop_* tools
+```

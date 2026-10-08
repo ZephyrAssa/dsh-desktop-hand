@@ -107,6 +107,38 @@ namespace DSKHand {
         public bool IsUwp;
         public bool Minimized;
         public int BlackPermille;
+        /// 是否是 ApplicationFrameHost 宿主壳（唯一真正抓不出内容的盲区）。
+        /// 与 IsUwp 分开：CoreWindow 也是 UWP，但它能抓。
+        public bool IsFrameHost;
+    }
+
+    /// 窗口类名的语义分类（2026-10-03 实测修正）。
+    ///
+    /// ⚠️ 历史错误：本文档与 SKILL.md 曾断言"UWP 应用是 PrintWindow 的盲区"。
+    /// **该表述是错的，且会让人放弃一个本来能抓的窗口。** 实测对照：
+    ///
+    ///   | 窗口类名                        | 结果                                   |
+    ///   | ------------------------------- | -------------------------------------- |
+    ///   | Windows.UI.Core.CoreWindow      | **完整真实内容**（SystemSettings 418KB）|
+    ///   | ApplicationFrameWindow          | 空白框架 + 齿轮 logo（31KB，零可操作信息）|
+    ///
+    /// 真正的判据是**类名**，不是"是不是 UWP"，也不是"是不是应用自己的进程"
+    /// （本例两者恰好重合，极易被误当成因果）。
+    ///
+    /// CoreWindow：UWP 真实的 XAML 窗口，PrintWindow 抓得到 → 不该报警告。
+    /// ApplicationFrameWindow：AFH 宿主壳，抓出来是空的 → 这才是唯一的盲区。
+    public static class WinClass {
+        public const string CoreWindow = "Windows.UI.Core.CoreWindow";
+        public const string FrameHost = "ApplicationFrameWindow";
+
+        /// UWP 真窗口：能抓，**不是**盲区。
+        public static bool IsCoreWindow(string cls) { return cls == CoreWindow; }
+
+        /// 宿主壳：抓出来可能是空白框架，需要提示。
+        public static bool IsFrameHost(string cls) { return cls == FrameHost; }
+
+        /// 宽泛的"与 UWP 有关"（仅用于列表标注，不用于决定警告）。
+        public static bool IsUwpRelated(string cls) { return IsCoreWindow(cls) || IsFrameHost(cls); }
     }
 
     public class Shot {
@@ -234,14 +266,14 @@ namespace DSKHand {
                     Handle = (long)h, Pid = pid,
                     X = r.L, Y = r.T, W = r.R - r.L, H = r.B - r.T,
                     Title = title, Class = cls, Process = pname,
-                    IsUwp = cls == "Windows.UI.Core.CoreWindow" || cls == "ApplicationFrameWindow",
+                    IsUwp = WinClass.IsUwpRelated(cls),
+                    IsFrameHost = WinClass.IsFrameHost(cls),
                     Minimized = IsIconic(h)
                 });
                 return true;
             }, IntPtr.Zero);
             return list;
         }
-
         /// 按标题模糊匹配；返回所有命中（不擅自选第一个）。
         public static List<WinInfo> MatchWindows(string needle) {
             var all = ListWindows();
@@ -266,7 +298,8 @@ namespace DSKHand {
             return new WinInfo {
                 Handle = h, Pid = pid, X = r.L, Y = r.T, W = r.R - r.L, H = r.B - r.T,
                 Title = tb.ToString(), Class = cb.ToString(), Process = pname,
-                IsUwp = cb.ToString() == "Windows.UI.Core.CoreWindow" || cb.ToString() == "ApplicationFrameWindow",
+                IsUwp = WinClass.IsUwpRelated(cb.ToString()),
+                IsFrameHost = WinClass.IsFrameHost(cb.ToString()),
                 Minimized = IsIconic(hp)
             };
         }
@@ -358,6 +391,54 @@ namespace DSKHand {
                 }
             }
             return total == 0 ? 0 : (int)(1000L * dark / total);
+        }
+
+        /// 空白度判据：**按实测像素**判断"抓出来的图是不是空的"，
+        /// 而不是按"这个窗口是不是 UWP"。理由见 WinClass 的注释：
+        /// 旧逻辑用 IsUwp 触发 warning，导致 418KB 的完整图也带警告、
+        /// 31KB 的空白框架同样只是"带警告"——警告完全失去区分力。
+        ///
+        /// 判据（2026-10-03 实测标定，本机 Win11 25H2）：
+        ///
+        ///   | 窗口                      | PNG 字节 | dominant‰ | distinctColors |
+        ///   | ------------------------- | -------- | --------- | -------------- |
+        ///   | ApplicationFrameWindow 壳 | 31,176   | 977       | **17**         |
+        ///   | CoreWindow（真内容）      | 418,069  | 944       | **173**        |
+        ///
+        /// 关键区分量是 **distinctColors**（相差 10 倍），不是 dominant
+        /// （两者都高：空白壳是纯色，真内容也有大片同色背景）。
+        /// 阈值取 distinctColors <= 48：远高于 17、远低于 173，两侧都留足余量。
+        /// 再要求主导色偏暗，避免把"纯白空白页"（如新建记事本）误判成抓取失败。
+        ///
+        /// ⚠️ 这里**不**看 blackPermille：实测空白壳只有 16‰（不黑）、
+        /// 真内容反而 617‰（深色主题）——黑像素比例是反的，本就不能当判据。
+        ///
+        /// 用 GetPixel 的理由同 BlackPermille：PS5.1 的 Add-Type 不支持 unsafe。
+        public static bool LooksBlank(Bitmap bmp, out int dominantPermille, out int distinctColors) {
+            dominantPermille = 0; distinctColors = 0;
+            var counts = new Dictionary<int, int>();
+            int total = 0;
+            int stepX = Math.Max(1, bmp.Width / 160), stepY = Math.Max(1, bmp.Height / 160);
+            for (int y = 0; y < bmp.Height; y += stepY) {
+                for (int x = 0; x < bmp.Width; x += stepX) {
+                    Color c = bmp.GetPixel(x, y);
+                    // 量化到 8 级/通道（>>5 = 每通道 32 级）：抗 PNG 压缩与亚像素抖动。
+                    // 量化粒度直接决定 distinctColors 的量级，改这里要重新标定阈值。
+                    int key = ((c.R >> 5) << 10) | ((c.G >> 5) << 5) | (c.B >> 5);
+                    int n; counts.TryGetValue(key, out n);
+                    counts[key] = n + 1;
+                    total++;
+                }
+            }
+            if (total == 0) return false;
+            int best = 0, bestKey = 0;
+            foreach (var kv in counts) if (kv.Value > best) { best = kv.Value; bestKey = kv.Key; }
+            dominantPermille = (int)(1000L * best / total);
+            distinctColors = counts.Count;
+            int domR = ((bestKey >> 10) & 31) << 5, domG = ((bestKey >> 5) & 31) << 5, domB = (bestKey & 31) << 5;
+            bool dominantIsDark = domR < 192 && domG < 192 && domB < 192;
+            // 主导色占比高 + 颜色种类极少 + 主导色不亮 → 空白壳
+            return dominantPermille >= 900 && distinctColors <= 48 && dominantIsDark;
         }
 
         // ---------------- mouse ----------------
@@ -525,6 +606,9 @@ try {
                         x = $_.X; y = $_.Y; width = $_.W; height = $_.H
                         title = $_.Title; class = $_.Class; process = $_.Process
                         uwp = $_.IsUwp; minimized = $_.Minimized
+                        # 区分宿主壳：同一标题出现多个句柄时，该抓哪个靠这个字段判断
+                        # （以前两个窗口都打 [UWP]，agent 只能盲选）。
+                        frameHost = $_.IsFrameHost
                     }
                 })
             $fgw = [DSKHand.Api]::GetForegroundWindow()
@@ -536,6 +620,7 @@ try {
             $bmp = $null
             $targetDesc = ''
             $targetClass = ''
+            $isFrameHost = $false
             $uwpWarn = $false
             $minimized = $false
             $clipX = 0; $clipY = 0
@@ -558,7 +643,7 @@ try {
                 }
                 $targetDesc = $w.Title
                 $targetClass = $w.Class
-                $uwpWarn = $w.IsUwp
+                $isFrameHost = $w.IsFrameHost
                 $minimized = $w.Minimized
                 # 窗口被抓时的原点（DWM 扩展边框）
                 $rect = New-Object 'DSKHand.Api+RECT'
@@ -604,6 +689,13 @@ try {
             }
 
             $black = [DSKHand.Api]::BlackPermille($bmp)
+            # 警告按**实测空白度**决定，不按"是不是 UWP"（2026-10-03 修正）。
+            # 旧逻辑 $uwpWarn = $w.IsUwp 有两个问题：
+            #   1. CoreWindow（能抓）也被判成需要警告，警告失去区分力；
+            #   2. 真正该警告的是"抓出来是空白"，与窗口类别只是相关而非等同。
+            $domPermille = 0; $distinct = 0
+            $blank = [DSKHand.Api]::LooksBlank($bmp, [ref]$domPermille, [ref]$distinct)
+            $uwpWarn = $blank
             $bmp.Save($OutPath, [System.Drawing.Imaging.ImageFormat]::Png)
             $wi = $bmp.Width; $hi = $bmp.Height
             $bmp.Dispose()
@@ -628,8 +720,12 @@ try {
                 coordScale = $(if ($Region) { $null } else { [math]::Round([double]$physW / [double]$wi, 4) })
                 blackPermille = $black
                 uwpWarning = $uwpWarn
+                # 判据透明化：让 agent 能自己复核"为什么说它空白/不空白"。
+                dominantPermille = $domPermille
+                distinctColors = $distinct
+                isFrameHost = $isFrameHost
                 minimized = $minimized
-                note = '黑像素比例仅供参考，不是成功判据（UWP 宿主 2.9% 黑也可能是空白框架）。'
+                note = '黑像素比例仅供参考，不是成功判据。空白判据见 dominantPermille/distinctColors。'
             }
         }
 

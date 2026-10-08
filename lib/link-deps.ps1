@@ -45,6 +45,9 @@ if ($Clean) {
 # 所以现在自动探测，并把选中的路径打印出来，避免再出现"测的不是跑的那份"。
 $appCandidates = @(
     $env:DSH_APP_DIR,
+    # DSH NEXT (AnywhereLab 版) — 2026-10 起本机使用；app 目录直接在 resources\app
+    'D:\Program\DSH\DSH NEXT\resources\app',
+    'D:\Program\DSH\DSH NEXT\resources\app.asar.unpacked',
     'C:\Program Files\DSH Desktop\resources\app.asar.unpacked',
     'C:\Program Files\DSH Desktop\resources\app',
     "$env:LOCALAPPDATA\Programs\DSH Desktop\resources\app.asar.unpacked",

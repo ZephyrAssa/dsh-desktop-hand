@@ -16,7 +16,7 @@ description: 操作 Windows 桌面：截屏（含抓被遮挡窗口）、按坐�
 | 工具 | 用途 |
 | --- | --- |
 | `desktop_diagnose` | **体检**：合成输入可不可信。点不准时第一个跑它 |
-| `desktop_list_windows` | 列窗口（handle / 进程 / 标题 / 尺寸 / 是否 UWP / 是否最小化） |
+| `desktop_list_windows` | 列窗口（handle / 进程 / 标题 / 尺寸 / 是否 UWP / 是否宿主壳 / 是否最小化） |
 | `desktop_capture` | 截屏。**图片直接返回给你**，不用再 read_image |
 | `desktop_focus` | 把窗口拉到前台 |
 | `desktop_click` | 按坐标点击 / 双击 / 右键 / 拖动 |
@@ -41,9 +41,27 @@ description: 操作 Windows 桌面：截屏（含抓被遮挡窗口）、按坐�
 **2. 看图和点图必须用同一张图。** `desktop_capture` 结果里的 `width` 若与屏幕物理宽不一致，
 把该图的 `width` 作为 `shotWidth` 传给 `desktop_click`。图中像素坐标直接可用（1:1）。
 
-**3. 别用黑像素比例判断抓取成功。** 实测 UWP 宿主窗口黑像素仅 2.9%，图却是空白框架。
-**必须看图。** UWP 应用（设置、计算器）是 `PrintWindow` 的盲区，工具会给出 `uwpWarning`，
-这时不要根据那张图判断界面状态。
+**3. 别用黑像素比例判断抓取成功。必须看图。**
+实测反例（2026-10-03，本机逐项复核）：**黑像素比例与"是不是空白"是反的**——
+`ApplicationFrameWindow` 空白壳只有 **16‰**，而 SystemSettings 的**真内容反而 617‰**（深色主题）。
+所以永远不能拿它当判据。
+
+**UWP 不是盲区，`ApplicationFrameWindow` 宿主壳才是。** 这是曾经的文档错误，
+已实测推翻，不要再照旧说法放弃一个本来能抓的窗口：
+
+| 窗口类名 | 结果 |
+| --- | --- |
+| `Windows.UI.Core.CoreWindow`（UWP 真实 XAML 窗口） | **完整真实内容**，可抓 |
+| `ApplicationFrameWindow`（AFH 宿主壳） | 空白框架，零可操作信息 |
+
+抓 UWP 应用的正确做法：
+1. 先 `desktop_list_windows`；**同一标题出现多个句柄**时，
+   优先抓**没有 `[UWP-宿主/可能空白]` 标记**的那个。
+2. `uwpWarning` 现在**按实测空白度触发**（`distinctColors` 极少 + 主导色占比极高），
+   可以信任：实测空白壳 `distinctColors=17`，真内容 `173`。
+   看到它就换另一个句柄重抓，别据此判断界面状态。
+3. 判据始终是**图里有没有 UI 内容**，不是进程名、也不是"是不是 UWP"。
+4. 都抓不到才退回全屏抓取（要求窗口可见），而不是判定该应用不可抓。
 
 **4. 点不准 / 输入丢失 → 先跑 `desktop_diagnose`，不要调代码。**
 本机装了 GameViewer 远程串流。**远端有人在动鼠标时，合成坐标会被实时覆盖**，
