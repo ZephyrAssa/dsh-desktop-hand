@@ -63,16 +63,19 @@ jobs:
         # showed 'failure' while the log plainly read "37 passed / 0 failed".
         # Run the script directly, capture its code first, and only then tee.
         run: |
-          ./lib/selftest.ps1 *> selftest-output.txt
+          # Written to the runner's workspace temp, NOT the checkout: an
+          # untracked build artifact should not be able to dirty the tree.
+          $out = Join-Path $env:RUNNER_TEMP 'selftest-output.txt'
+          ./lib/selftest.ps1 *> $out
           $code = $LASTEXITCODE
-          Get-Content selftest-output.txt | Write-Host
+          Get-Content $out | Write-Host
           # Report both the shell's exit code and the script's own verdict, so a
           # mismatch between 'tests passed' and 'step failed' is immediately visible.
-          $verdict = (Get-Content selftest-output.txt | Select-String '结果：' | Select-Object -Last 1).Line
+          $verdict = (Get-Content $out | Select-String '结果：' | Select-Object -Last 1).Line
           Write-Host "::notice::LASTEXITCODE=$code ; verdict=$verdict"
           if ($code -ne 0) {
             Write-Host "::error::engine self-test exited $code"
-            $tail = (Get-Content selftest-output.txt -Tail 60) -join "`n"
+            $tail = (Get-Content $out -Tail 60) -join "`n"
             "## Engine self-test failed (exit $code)`n`n``````n$tail`n``````" |
               Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit $code
@@ -84,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: selftest-output
-          path: selftest-output.txt
+          path: ${{ runner.temp }}/selftest-output.txt
           if-no-files-found: warn
 
       - name: Occluded-capture proof

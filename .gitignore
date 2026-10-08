@@ -14,3 +14,7 @@ captures/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Self-test output. CI writes it to the runner's temp dir; running the suite
+# locally produces it here. Either way it is a build artifact, not source.
+selftest-output.txt
