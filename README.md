@@ -267,6 +267,7 @@ dsh-desktop-hand/
     ├── selftest-harness.mjs      子进程 seam 契约自检
     ├── verify-serialization-contract.mjs  宿主序列化契约守卫
     ├── occlusion-test.ps1        遮挡抓取验证
+    ├── hold-windows.ps1          测试台：造一对"目标 + 完全遮挡"窗口
     └── link-deps.ps1             为脱离 DSH 的自检建/清依赖链接
 ```
 
